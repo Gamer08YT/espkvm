@@ -778,6 +778,23 @@ for one or two of them.
 </tr>
 </table>
 
+<table>
+<tr>
+<td width="50%"><a href="https://www.printables.com/model/1873131-case-for-m5stack-add-on-display-inout-fits-unit-po"><img src="docs/case-m5-display-in.webp" alt="A yellow 3D-printed case on the M5Stack Add-on Display In, sitting on the grey Unit PoE-P4 as one block, with the HDMI port at the end"></a></td>
+<td valign="top">
+
+**[Case for M5Stack Add-on Display In](https://www.printables.com/model/1873131-case-for-m5stack-add-on-display-inout-fits-unit-po)** (optional)
+
+M5Stack sells the HDMI add-on for the Unit PoE-P4 as a bare board, so I drew a
+case for it that matches the Unit PoE-P4 housing. HDMI and USB-A stay open, and
+Ethernet and USB-C on the unit stay free. One part, no screws: four tabs clip
+into the unit's housing. The tabs are thin, so press it on gently. Also on
+[Thingiverse](https://www.thingiverse.com/thing:7421013).
+
+</td>
+</tr>
+</table>
+
 <sub>Board and module photos (c) their makers, taken from product pages and used
 only to identify the hardware. The case photos are by their authors:
 [Colin Hickey](https://github.com/chickey), CC BY-NC,
