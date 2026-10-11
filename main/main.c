@@ -84,6 +84,8 @@ static void apply_log_level(void)
     if (level == ESP_LOG_INFO) {
         esp_log_level_set("esp_https_server", ESP_LOG_WARN);
         esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+        /* A line per connection once a certificate selection hook is set. */
+        esp_log_level_set("esp-tls-mbedtls", ESP_LOG_WARN);
 
         /*
          * The Tailscale client (microlink) logs a line per probe, per relay

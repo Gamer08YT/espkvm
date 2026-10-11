@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "http_server.c"
         "tls_cert.c"
+        "acme.c"
         "auth.c"
         "fw_install.c"
         "record_api.c"

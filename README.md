@@ -89,6 +89,7 @@ Useful for what it does today, and honest about the rest.
 | Firmware update over the network, with rollback | works |
 | HTTPS with a certificate the device issues itself | works; the CA is downloadable, which also enables H.264 |
 | Bring your own TLS certificate | works; Settings, or `PUT /api/v1/tls/cert` |
+| Let's Encrypt certificate for the Tailscale name | works; Settings &rarr; VPN, renews on its own, nothing to import |
 | Login, two-factor sign-in, and a physical password reset | works; the second factor is a TOTP app, with eight recovery codes |
 | Thermal protection | works |
 | Virtual media: boot the target from a disk image | works; from a microSD card (FAT32 or exFAT, MBR or GPT), or a small image in the device's own flash |
@@ -135,7 +136,10 @@ network you trust, or reach it over a VPN. It has two built in, in Settings
 
 Tailscale needs no port forward, no gateway and no VPS: the device joins your
 tailnet and answers at its 100.x address, or its MagicDNS name, from anywhere.
-Its certificate is valid there too. WireGuard is a split tunnel - it makes its
+Its certificate is valid there too. With **Trusted certificate (Let's Encrypt)**
+on, the device also gets a Let's Encrypt certificate for its tailnet name
+(`espkvm.tailnet.ts.net`), so any browser on the tailnet trusts it with nothing
+imported. WireGuard is a split tunnel - it makes its
 own key on the device and shows the public half in the VPN tab, to register on
 your hub.
 
@@ -788,7 +792,8 @@ for one or two of them.
 M5Stack sells the HDMI add-on for the Unit PoE-P4 as a bare board, so I drew a
 case for it that matches the Unit PoE-P4 housing. HDMI and USB-A stay open, and
 Ethernet and USB-C on the unit stay free. One part, no screws: four tabs clip
-into the unit's housing. The tabs are thin, so press it on gently. Also on
+into the unit's housing. The tabs are thin, so press it on gently. The
+Display Out add-on has the same outline and should fit too. Also on
 [Thingiverse](https://www.thingiverse.com/thing:7421013).
 
 </td>
@@ -864,6 +869,18 @@ console's service worker serves its saved copy, which can only say "Cannot
 reach the device", even after the browser restarts (a private window works,
 having no saved copy). That page now has "Open without the saved copy", which
 drops it and shows the browser's certificate warning.
+
+**Let's Encrypt over Tailscale.** Turn on MagicDNS and HTTPS certificates in
+the Tailscale admin console (the DNS page), then **Settings -> VPN -> Trusted
+certificate (Let's Encrypt)**. The device asks Let's Encrypt for a certificate
+for its tailnet name; Tailscale publishes the DNS record that proves the name is
+yours, so no domain, DNS token or open port is needed. It renews after two
+thirds of the certificate's life, and retries after 1, 2, 4 and 8 hours if
+something fails. Progress and errors show in **Settings -> Security -> Device
+certificate**. The certificate is only served to browsers that ask for the
+tailnet name: `espkvm.local` and the IP addresses keep the device's own, and
+Let's Encrypt never issues for a private IP. The name ends up in public
+Certificate Transparency logs.
 
 The device is dual-stack. On a network that advertises IPv6 it takes an address
 there too, with nothing to configure, and `espkvm.local` resolves to it. From the
@@ -1349,6 +1366,7 @@ Everything the console does is available over HTTP.
 | `POST /api/v1/system/restart` | restart, for settings that need one |
 | `POST /api/v1/settings/reset` | put every setting back to its default |
 | `GET /api/v1/tls`, `PUT`/`DELETE /api/v1/tls/cert` | install your own certificate and key, or go back to the self-signed one |
+| `POST /api/v1/tls/acme` | get or renew the Let's Encrypt certificate now; `{"staging":true}` uses the test CA. Progress is in `acme` of `GET /api/v1/tls` |
 | `POST`/`GET /api/v1/wifi/scan` | start a scan, then read what it found (boards with an ESP32-C6) |
 | `GET /api/v1/pins` | the board's expansion header, and which GPIOs it leaves free |
 | `GET /api/v1/auth/session` | whether a login is required, and who is signed in |

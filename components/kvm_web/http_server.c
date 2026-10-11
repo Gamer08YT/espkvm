@@ -77,6 +77,7 @@
 #include "kvm_storage.h"
 #include "kvm_thermal.h"
 #include "kvm_tls.h"
+#include "kvm_acme.h"
 #include "usb_hid.h"
 #include "video_frame.h"
 
@@ -3365,12 +3366,37 @@ static esp_err_t api_tls_get(httpd_req_t *req)
         return kvm_auth_challenge(req);
     }
     const bool byo = kvm_tls_byo_present();
-    char body[96];
-    snprintf(body, sizeof(body), "{\"https\":%s,\"custom\":%s}",
-             kvm_setting_bool("sec_https") ? "true" : "false", byo ? "true" : "false");
+    char acme[640];
+    kvm_acme_status_json(acme, sizeof(acme));
+    char body[768];
+    snprintf(body, sizeof(body), "{\"https\":%s,\"custom\":%s,\"acme\":%s}",
+             kvm_setting_bool("sec_https") ? "true" : "false", byo ? "true" : "false",
+             acme[0] ? acme : "null");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, body);
+}
+
+/** Get or renew the Let's Encrypt certificate now. {"staging":true} uses the test CA. */
+static esp_err_t api_tls_acme_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    char buf[64] = "";
+    if (req->content_len > 0 && req->content_len < (int)sizeof(buf)) {
+        (void)httpd_req_recv(req, buf, (size_t)req->content_len);
+    }
+    const bool staging = strstr(buf, "\"staging\":true") != NULL;
+    esp_err_t res = kvm_acme_run(staging);
+    if (res == ESP_ERR_INVALID_STATE) {
+        return send_json_error(req, "409 Conflict", "already running");
+    }
+    if (res != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(res));
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"started\"}");
 }
 
 /** The start of the private-key block within a combined PEM, or NULL. */
@@ -4726,6 +4752,7 @@ httpd_handle_t http_server_start(void)
          * leave the console unreachable over a bad upload. At most two attempts:
          * bring-your-own, then self-signed.
          */
+        kvm_acme_init();
         bool allow_byo = true;
         for (int attempt = 0; attempt < 2; attempt++) {
             kvm_tls_identity_t id;
@@ -4759,6 +4786,8 @@ httpd_handle_t http_server_start(void)
              * into a few milliseconds.
              */
             ssl.session_tickets = true;
+            /* The Let's Encrypt certificate, for clients asking for the tailnet name. */
+            ssl.cert_select_cb = kvm_acme_sni_cb;
 
             const bool was_byo = id.byo;
             esp_err_t err = httpd_ssl_start(&h, &ssl);
@@ -4851,6 +4880,7 @@ httpd_handle_t http_server_start(void)
         {.uri = "/api/v1/auth/token", .method = HTTP_DELETE, .handler = api_token_delete},
         {.uri = "/api/v1/tls/cert", .method = HTTP_PUT, .handler = api_tls_cert_put},
         {.uri = "/api/v1/tls/cert", .method = HTTP_DELETE, .handler = api_tls_cert_delete},
+        {.uri = "/api/v1/tls/acme", .method = HTTP_POST, .handler = api_tls_acme_post},
         {.uri = "/api/v1/power/wake", .method = HTTP_POST, .handler = api_power_wake_post},
         {.uri = "/api/v1/power/click", .method = HTTP_POST, .handler = api_power_click_post},
         {.uri = "/api/v1/power/hold", .method = HTTP_POST, .handler = api_power_hold_post},

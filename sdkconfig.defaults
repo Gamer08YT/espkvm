@@ -171,3 +171,6 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
 # Task list with stacks for GET /api/v1/system/memory.
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# Serve the Let's Encrypt certificate to clients that ask for the tailnet name (SNI)
+CONFIG_ESP_HTTPS_SERVER_CERT_SELECT_HOOK=y

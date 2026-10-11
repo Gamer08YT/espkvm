@@ -1037,6 +1037,17 @@ static const kvm_setting_t s_settings[] = {
                 "the warning off. Needs notifications set up and the clock in sync.",
         .def = 14, .min = 0, .max = 90, .requires_cap = KVM_CAP_TS,
     },
+    {
+        .key = "ts_cert", .section = "vpn", .group = "Tailscale", .type = KVM_VT_BOOL,
+        .title = "Trusted certificate (Let's Encrypt)",
+        .help = "Get a Let's Encrypt certificate for the device's tailnet name "
+                "(host.tailnet.ts.net) and renew it on its own, so a browser trusts the "
+                "console with nothing imported. Needs MagicDNS and HTTPS certificates "
+                "turned on in the Tailscale admin console (DNS page). The name is "
+                "published in Certificate Transparency logs. The local name and the IP "
+                "addresses keep the device's own certificate.",
+        .def = 0, .requires_cap = KVM_CAP_TS,
+    },
 
     /* ---- mqtt / home assistant ------------------------------------------ */
     {

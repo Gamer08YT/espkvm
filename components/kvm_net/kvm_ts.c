@@ -15,6 +15,7 @@
  */
 #include "kvm_ts.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -383,6 +384,28 @@ void kvm_ts_status(kvm_ts_status_t *out)
         if (ip) {
             microlink_ip_to_str(ip, out->address);
         }
+        snprintf(out->name, sizeof(out->name), "%s", microlink_get_self_name(ml));
+        snprintf(out->cert_domain, sizeof(out->cert_domain), "%s", microlink_get_cert_domain(ml));
     }
     xSemaphoreGive(s_mtx);
+}
+
+esp_err_t kvm_ts_set_txt(const char *name, const char *value, char *err, size_t err_len)
+{
+    if (!s_mtx) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Held for the whole call, so the client cannot be stopped under it. */
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    esp_err_t res;
+    if (!s_started || !s_ml || !microlink_is_connected(s_ml)) {
+        if (err && err_len) {
+            snprintf(err, err_len, "Tailscale is not connected");
+        }
+        res = ESP_ERR_INVALID_STATE;
+    } else {
+        res = microlink_set_dns(s_ml, name, "TXT", value, 60000, err, err_len);
+    }
+    xSemaphoreGive(s_mtx);
+    return res;
 }

@@ -39,10 +39,21 @@ typedef struct {
      *  Tailscale allows six months at most, so this is a date worth watching. */
     int64_t key_expiry;
     bool key_expired;   /**< the control plane says the key is already out */
+    char name[128];     /**< our MagicDNS name, "" when MagicDNS is off */
+    /** The name the control plane will help certify (DNSConfig.CertDomains);
+     *  "" when HTTPS certificates are off for the tailnet. */
+    char cert_domain[128];
 } kvm_ts_status_t;
 
 /** Fill @p out with the tailnet client's current state. */
 void kvm_ts_status(kvm_ts_status_t *out);
+
+/**
+ * Publish a TXT record through the control plane, for an ACME DNS-01 challenge
+ * on our own tailnet name. Blocks until the control plane answers (up to a
+ * minute). @p err gets a short reason on failure.
+ */
+esp_err_t kvm_ts_set_txt(const char *name, const char *value, char *err, size_t err_len);
 
 /**
  * Callback invoked once the tailnet is up with the device's 100.x address and

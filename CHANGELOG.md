@@ -7,6 +7,20 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-11
+
+### Added
+- **A Let's Encrypt certificate over Tailscale.** Turn on "Trusted certificate
+  (Let's Encrypt)" in Settings -> VPN, and HTTPS certificates in the Tailscale
+  admin console. The device gets a certificate for its tailnet name
+  (`espkvm.tailnet.ts.net`) and renews it on its own, so a browser on the
+  tailnet opens the console with no warning and no CA to import. Tailscale
+  publishes the DNS-01 record for it: no domain, token or open port. The
+  certificate is served only for that name; `espkvm.local` and IPs keep the
+  device's own, and nothing restarts. Status and a "Renew now" button are in
+  Settings -> Security. Let's Encrypt does not issue for private IPs, so by IP
+  it is still the device's CA.
+
 ## [0.62.1] - 2026-10-11
 
 ### Fixed
