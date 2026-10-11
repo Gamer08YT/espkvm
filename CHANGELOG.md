@@ -7,6 +7,26 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-10-11
+
+### Fixed
+- **Renewing your own certificate.** With one installed, Settings showed only
+  "Revert to the self-signed certificate", so renewing meant reverting,
+  trusting the self-signed one, then pasting the new chain. The form is there
+  now and the new certificate replaces the old in place. A script can do the
+  same: `PUT /api/v1/tls/cert`, with an example in the README for a renewal
+  hook - certificates are heading for 100-day lives in 2027 and 47 in 2029.
+  Thanks to petrn (#72).
+- **"Cannot reach the device" after a certificate change, until a private
+  window.** The console's service worker keeps a copy of the page for a
+  network blip; when the browser refused a changed certificate, that looked
+  like a blip, so the saved copy was shown - it can only say "cannot reach" -
+  and the browser's certificate warning never appeared, not even after a
+  restart. The page now explains it and has "Open without the saved copy",
+  which drops the worker and reloads, so the warning shows. The saved copy
+  is also refreshed on every load now: it used to be the console from the day
+  the worker was installed, however old. (#72)
+
 ## [0.62.0] - 2026-10-10
 
 ### Added

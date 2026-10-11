@@ -827,6 +827,27 @@ device by name, at **https://espkvm.local**.
 On a static IP the certificate names the address as well, so `https://<ip>` works
 once the CA is in. On DHCP, use the name.
 
+**Your own certificate** - from an internal CA, or a real one for a name that
+resolves to the device - goes in under **Settings -> Security -> Device
+certificate**: the chain (leaf first) followed by its private key. Renewing it
+is the same form: the new one replaces the old in place, no need to go back to
+the self-signed one first. A renewal hook can do it with no browser:
+
+```sh
+# sign in once, then send the chain and the key as one PEM body
+curl -sk -c jar -H 'Content-Type: application/json' \
+  -d '{"user":"admin","password":"..."}' https://kvm.example.com/api/v1/auth/login
+cat fullchain.pem privkey.pem | curl -sk -b jar -H 'X-ESP-KVM: 1' \
+  -X PUT --data-binary @- https://kvm.example.com/api/v1/tls/cert
+```
+
+The device restarts to apply it. Going back to the self-signed certificate
+leaves a browser that does not trust the device's CA refusing it - quietly: the
+console's service worker serves its saved copy, which can only say "Cannot
+reach the device", even after the browser restarts (a private window works,
+having no saved copy). That page now has "Open without the saved copy", which
+drops it and shows the browser's certificate warning.
+
 The device is dual-stack. On a network that advertises IPv6 it takes an address
 there too, with nothing to configure, and `espkvm.local` resolves to it. From the
 next restart the certificate names those addresses, so `https://[address]/` is

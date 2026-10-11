@@ -7,7 +7,10 @@
  * blip and shows the UI (which then reports the device as unreachable) instead
  * of the browser's dinosaur.
  */
-const CACHE = "espkvm-shell-v1";
+/* v2: the copy is refreshed on every load (v1 kept the one from install day,
+ * which could be months older than the firmware). Renaming it also makes the
+ * browser reinstall this worker and drop the old copy. */
+const CACHE = "espkvm-shell-v2";
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -31,6 +34,20 @@ self.addEventListener("fetch", (e) => {
   /* Only the top-level navigation falls back to the cached shell. Everything
      else (stream, websocket, api, assets) must reach the device live. */
   if (e.request.mode === "navigate") {
-    e.respondWith(fetch(e.request).catch(() => caches.match("/")));
+    e.respondWith(
+      fetch(e.request)
+        .then((resp) => {
+          /* Keep the copy in step with the firmware: the next fallback shows
+             the console this device is running now. */
+          if (resp.ok) {
+            const copy = resp.clone();
+            caches.open(CACHE).then((c) => c.put("/", copy));
+          }
+          return resp;
+        })
+        /* Also what a refused certificate looks like from here - the browser
+           shows no warning to a worker - so the copy says what to do then. */
+        .catch(() => caches.match("/")),
+    );
   }
 });
