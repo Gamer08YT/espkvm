@@ -7,6 +7,24 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- **A drawing of where this screen sits.** Settings -> Input -> Several
+  screens now draws the whole desktop and the captured screen inside it,
+  from the four saved numbers, so a wrong "Find this screen" result shows at
+  a glance. A screen that does not fit inside the desktop is drawn in red,
+  with a hint to run it again.
+
+### Fixed
+- **Settings: a typed number could land in the wrong field.** The settings
+  table lists the Pointer and Target groups in two places each, so the
+  console drew two headings with one name, and Vue then reused the wrong
+  inputs on a redraw. A group is now drawn once, with all its settings.
+- **Settings: a number typed right after another one was lost.** While one
+  field saved, every field in the panel was switched off for a moment, so
+  the field being typed into dropped the keys, and a redraw put its old
+  value (often 0) back. Number and text fields now stay on, and a field keeps
+  what is typed into it until it is saved.
+
 ## [0.64.0] - 2026-10-12
 
 ### Added

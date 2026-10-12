@@ -41,18 +41,15 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 
 - **HDMI audio** - capture the I2S audio from the bridge and stream it to the browser. The C790 brings it out on a connector of its own, so it costs four wires to the ESP32-P4 and the P4 receives as the slave
 - **More supported boards**
-- **Tell the console how the target's monitors are arranged** - an absolute pointer addresses the target's whole desktop, so a second display makes the pointer travel further than the mouse and half the picture aim at a screen you cannot see. Give the desktop's size and where the captured screen sits inside it, and the console maps into that part instead - absolute pointing that lands where it is aimed on a multi-monitor target, without falling back to relative
 - **Install your own EDID** - the built-in profiles cover the common cases; this takes a binary from a monitor that works, for the target that only likes its own
-- **GPIO relays and lamps** - the pins already drive the ATX buttons; this opens the rest of them, as buttons and indicators of your own in the console
-- **Metrics for Prometheus** - the figures the console shows, in the format a monitoring system already reads
 
 ## Under consideration
 
-- Serial console passthrough - a terminal in the console, on a free UART or as a USB serial port the target sees
 - A USB network interface to the target
 - A VNC server - reach the target from any VNC client, no browser
 - Serving a USB drive plugged into the device as the target's virtual media
 - AmneziaWG - the obfuscated WireGuard fork, on top of the WireGuard client that is already here: junk packets before the handshake, junk inside it, and message types of its own ([#44](https://github.com/espkvm/espkvm/issues/44)). Asked for; it needs a server to test against
 - Yggdrasil - a decentralised overlay as an alternative to the WireGuard/Tailscale backends
+- Signed updates - the device checks an image's signature before it installs it over the network (OTA, URL, the release list); USB and the browser flasher still take any image, so own builds and forks keep working. No eFuses are burned. Secure boot itself locks a board to one key for good, so it stays the owner's choice, with the owner's own key
 
 Have a use case that is not here? Open a discussion.
