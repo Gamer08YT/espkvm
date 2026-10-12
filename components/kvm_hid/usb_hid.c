@@ -321,7 +321,7 @@ static uint8_t s_hs_config_descriptor[CFG_DESC_MAX];
 
 /* usb_pad setting: which pad, and whether it is alone on the device. */
 typedef enum { PAD_OFF = 0, PAD_ADDED = 1, PAD_ALONE = 2 } pad_mode_t;
-typedef enum { PAD_HORI = 0, PAD_XINPUT = 1 } pad_kind_t;
+typedef enum { PAD_HORI = 0, PAD_XINPUT = 1, PAD_XID = 2 } pad_kind_t;
 static pad_kind_t s_pad_kind;
 
 /*
@@ -342,6 +342,8 @@ static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, pad_mode_t pa
     if (pad == PAD_ALONE) {
         if (s_pad_kind == PAD_XINPUT) {
             n += xinput_iface_desc(buf + n, 0, 0x81, 0x01);
+        } else if (s_pad_kind == PAD_XID) {
+            n += xid_iface_desc(buf + n, 0x81, 0x02);
         } else {
             memcpy(buf + n, k_pad_iface_alone, sizeof(k_pad_iface_alone));
             n += sizeof(k_pad_iface_alone);
@@ -1122,6 +1124,27 @@ static void to_xinput(const pad_report_t *r, uint8_t out[XINPUT_REPORT_LEN])
     }
 }
 
+/* The original Xbox pad: d-pad, Start, Back and the stick clicks as bits, then
+ * eight pressure bytes (A B X Y Black White LT RT), then the sticks as in
+ * XInput. Black and White sit where R and L are. Home and Capture have no
+ * button there. */
+static void to_xid(const pad_report_t *r, uint8_t out[XINPUT_REPORT_LEN])
+{
+    uint8_t xi[XINPUT_REPORT_LEN];
+    to_xinput(r, xi);
+    memset(out, 0, XINPUT_REPORT_LEN);
+    out[1] = XINPUT_REPORT_LEN;
+    out[2] = (uint8_t)(xi[2] & 0xFF); /* up down left right start back LS RS: XInput's low byte */
+    static const uint16_t press[8] = {
+        USB_HID_PAD_B, USB_HID_PAD_A, USB_HID_PAD_Y, USB_HID_PAD_X,
+        USB_HID_PAD_R, USB_HID_PAD_L, USB_HID_PAD_ZL, USB_HID_PAD_ZR,
+    };
+    for (int i = 0; i < 8; i++) {
+        out[4 + i] = (r->buttons & press[i]) ? 255 : 0;
+    }
+    memcpy(out + 12, xi + 6, 8);
+}
+
 static void xinput_done(void)
 {
     if (s_hid_task) {
@@ -1140,7 +1163,11 @@ static void send_pad(const pad_report_t *r)
         return;
     }
     uint8_t rep[XINPUT_REPORT_LEN];
-    to_xinput(r, rep);
+    if (s_pad_kind == PAD_XID) {
+        to_xid(r, rep);
+    } else {
+        to_xinput(r, rep);
+    }
     (void)ulTaskNotifyTake(pdTRUE, 0);
     for (int attempt = 0; attempt < 2; attempt++) {
         if (xinput_send(rep)) {
@@ -1543,7 +1570,10 @@ bool usb_hid_pad_present(void)
 
 const char *usb_hid_pad_kind(void)
 {
-    return s_pad == PAD_OFF ? "" : s_pad_kind == PAD_XINPUT ? "xinput" : "switch";
+    return s_pad == PAD_OFF            ? ""
+           : s_pad_kind == PAD_XINPUT ? "xinput"
+           : s_pad_kind == PAD_XID    ? "xbox"
+                                      : "switch";
 }
 
 static void pad_enqueue(uint16_t buttons, uint8_t hat, uint8_t lx, uint8_t ly, uint8_t rx,
@@ -1614,12 +1644,12 @@ esp_err_t usb_hid_init(void)
      * is a plain keyboard and mouse by default and only claims the extra
      * endpoints when virtual media is actually wanted.
      */
-    /* off, switch, switch_alone, xinput, xinput_alone */
+    /* off, switch, switch_alone, xinput, xinput_alone, xbox (always alone) */
     const int32_t pad_setting = kvm_setting_int("usb_pad");
-    s_pad = pad_setting == 1 || pad_setting == 3 ? PAD_ADDED
-            : pad_setting == 2 || pad_setting == 4 ? PAD_ALONE
-                                                   : PAD_OFF;
-    s_pad_kind = pad_setting >= 3 ? PAD_XINPUT : PAD_HORI;
+    s_pad = pad_setting == 1 || pad_setting == 3                       ? PAD_ADDED
+            : pad_setting == 2 || pad_setting == 4 || pad_setting == 5 ? PAD_ALONE
+                                                                       : PAD_OFF;
+    s_pad_kind = pad_setting == 5 ? PAD_XID : pad_setting >= 3 ? PAD_XINPUT : PAD_HORI;
     s_kbd_only = s_pad != PAD_ALONE && kvm_setting_bool("usb_legacy");
     if (s_kbd_only) {
         s_pad = PAD_OFF; /* an old BIOS gets the keyboard and nothing else */
@@ -1632,11 +1662,11 @@ esp_err_t usb_hid_init(void)
     } else if (s_pad == PAD_ADDED) {
         s_inst[FN_PAD] = ITF_PAD_ADDED;
     }
-    if (s_pad_kind == PAD_XINPUT) {
+    if (s_pad_kind != PAD_HORI) {
         /* Not a HID instance: its own class driver (xinput.c). */
         s_inst[FN_PAD] = -1;
     }
-    xinput_enable(s_pad != PAD_OFF && s_pad_kind == PAD_XINPUT);
+    xinput_enable(s_pad != PAD_OFF && s_pad_kind != PAD_HORI, s_pad_kind == PAD_XID);
     xinput_set_done_cb(xinput_done);
     const bool with_msc = !s_kbd_only && s_pad != PAD_ALONE && kvm_setting_bool("msc_enable");
     s_msc_present = with_msc;
@@ -1648,7 +1678,7 @@ esp_err_t usb_hid_init(void)
         ESP_LOGI(TAG, "USB functions: old BIOS mode - keyboard only, full speed");
     } else if (s_pad == PAD_ALONE) {
         ESP_LOGI(TAG, "USB functions: %s gamepad only, full speed",
-                 s_pad_kind == PAD_XINPUT ? "XInput" : "HORI");
+                 s_pad_kind == PAD_XINPUT ? "XInput" : s_pad_kind == PAD_XID ? "original Xbox" : "HORI");
     } else {
         ESP_LOGI(TAG, "USB functions: HID%s%s",
                  s_pad != PAD_ADDED ? "" : s_pad_kind == PAD_XINPUT ? " + XInput gamepad" : " + HORI gamepad",
@@ -1662,6 +1692,9 @@ esp_err_t usb_hid_init(void)
         tusb_cfg.descriptor.device = &k_pad_device_desc;
         s_string_descriptor[1] = "HORI CO.,LTD.";
         s_string_descriptor[2] = "POKKEN CONTROLLER";
+    } else if (s_pad != PAD_OFF && s_pad_kind == PAD_XID) {
+        /* No strings: the real pad has none, and the console never asks. */
+        tusb_cfg.descriptor.device = &xid_device_desc;
     } else if (s_pad != PAD_OFF) {
         /* Beside the keyboard the device has to say "see the interfaces". */
         xinput_dev = xinput_device_desc;

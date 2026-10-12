@@ -102,7 +102,7 @@ Useful for what it does today, and honest about the rest.
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
 | Wake-on-LAN | works |
-| A gamepad for a console (Switch, Steam Deck, Windows) | works on a Switch (Settings &rarr; Input &rarr; Gamepad &rarr; switch_alone); the wired Xbox 360 pad for Windows and a Steam Deck is not tried on hardware yet. The console gets a gamepad panel or an overlay over the picture, and a controller on your own computer works through it ([clip](https://www.youtube.com/watch?v=UCSkzGHSKWI)) |
+| A gamepad for a console (Switch, original Xbox, Steam Deck, Windows) | works on a Switch (Settings &rarr; Input &rarr; Gamepad &rarr; switch_alone); the wired Xbox 360 pad for Windows and a Steam Deck is not tried on hardware yet. The original Xbox pad (`xbox`) comes from [ZacharyLeahan's fork](https://github.com/ZacharyLeahan/espkvm), where it was tried on a real Xbox; the console's controller port needs an adapter to a USB socket. The console gets a gamepad panel or an overlay over the picture, and a controller on your own computer works through it ([clip](https://www.youtube.com/watch?v=UCSkzGHSKWI)) |
 | HDMI-CEC: see the source, send it remote keys, standby and wake | works on boards with a TC358743 capture chip; the device acts as a TV. Only media boxes, consoles, a Raspberry Pi and the like speak CEC - an ordinary PC does not. Tried with a Steam Deck in its dock: name, remote keys in the Steam menus and standby work, wake does not ([clip](https://www.youtube.com/watch?v=hXiaOugYkVM)) |
 | A battery-backed clock chip | optional; with one fitted the device knows the time after a restart with no network - file names and two-factor codes need it. A DS3231 (DS3231M, DS3232) works and shows its thermometer too; a PCF8563 / BM8563, PCF85063 or PCF8523 is supported from the datasheet but not tried yet. Found by itself on the capture board's I2C bus, or chosen with its own pins in Settings &rarr; System &rarr; Clock. A DS1307 is not used |
 | WiFi - station or its own access point | works; on boards with an ESP32-C6, or an ESP32-C5 for 5 GHz. A rescue hotspot and a captive portal |
@@ -312,6 +312,7 @@ cable.
 <table>
 <tr>
 <td width="50%"><img src="docs/board-m5-poe-p4.webp" alt="M5Stack Unit PoE-P4 module"></td>
+<td width="50%"><img src="docs/board-nano-wifi6-db.webp" alt="Waveshare ESP32-P4-NANO-WIFI6-DB board"></td>
 </tr>
 <tr>
 <td valign="top">
@@ -338,6 +339,24 @@ third of MJPEG's bandwidth. The **Unit PoE-P4** sold today is pre-3.0
 rev 3.x silicon (`boards/m5_poe_p4x.defaults`, "PoE-P4X"), which would pay
 neither cost - but M5Stack does not list such a unit yet, nobody has run it,
 and the colour order of its picture on rev 3.x is untested.
+
+</td>
+<td valign="top">
+
+**[Waveshare ESP32-P4-NANO-WIFI6-DB](https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm)**
+
+The NANO with a dual-band **ESP32-C5** in place of the C6, so it can join a 5 GHz
+network - the first supported board that can. 32 MB PSRAM, 16 MB flash, 100M
+Ethernet with a PoE header, a Type-A port for the target, and the 15-pin
+Raspberry Pi camera connector. Build overlay: `boards/nano_wifi6_db_p4.defaults`.
+
+It carries an ESP32-P4NRW32**X**, which is rev 3.x silicon, so unlike every other
+board here it has **one image and no pre-3.0 twin**. Its right-hand header also
+brings out the high-speed USB pair, so the target can be wired there instead of
+the Type-A socket. That socket always carries 5 V, as on the NANO, so the lead to
+the target is an A-to-A cable with the 5 V wire cut.
+
+Run by a user with a C790 from AliExpress, no problems. Wi-Fi not tried yet.
 
 </td>
 </tr>
@@ -407,7 +426,6 @@ above.
 <table>
 <tr>
 <td width="50%"><img src="docs/board-module-devkit.webp" alt="Waveshare ESP32-P4-Module-DEV-KIT board"></td>
-<td width="50%"><img src="docs/board-nano-wifi6-db.webp" alt="Waveshare ESP32-P4-NANO-WIFI6-DB board"></td>
 </tr>
 <tr>
 <td valign="top">
@@ -425,22 +443,6 @@ a different screen in the box.
 Its OTG-HS is switched **by a jumper** between one Type-A socket and an internal
 hub - the KVM wants the socket - and that socket drives its own 5 V, so the lead
 to the target must be an A-to-A cable with the 5 V wire cut.
-
-</td>
-<td valign="top">
-
-**[Waveshare ESP32-P4-NANO-WIFI6-DB](https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm)**
-
-The NANO with a dual-band **ESP32-C5** in place of the C6, so it can join a 5 GHz
-network - the first supported board that can. 32 MB PSRAM, 16 MB flash, 100M
-Ethernet with a PoE header, a Type-A port for the target, and the 15-pin
-Raspberry Pi camera connector. Build overlay: `boards/nano_wifi6_db_p4.defaults`.
-
-It carries an ESP32-P4NRW32**X**, which is rev 3.x silicon, so unlike every other
-board here it has **one image and no pre-3.0 twin**. Its right-hand header also
-brings out the high-speed USB pair, so the target can be wired there instead of
-the Type-A socket. That socket always carries 5 V, as on the NANO, so the lead to
-the target is an A-to-A cable with the 5 V wire cut.
 
 </td>
 </tr>
@@ -1515,6 +1517,11 @@ specification.
 
 The interface icons follow the Feather and Lucide conventions closely enough
 that those sets deserve the credit; see [NOTICE](NOTICE).
+
+The original Xbox gamepad mode, and a check on the capture size at boot, come
+from **ZacharyLeahan**'s [fork](https://github.com/ZacharyLeahan/espkvm), which
+runs ESP-KVM on an original Xbox. He worked out the XID protocol on a real
+console; the descriptor bytes and the vendor requests here are his.
 
 A 3D-printed enclosure for the original parts is published by jrowny on
 [MakerWorld](https://makerworld.com/en/models/2961981-esp32-p4-ip-kvm-enclosure).

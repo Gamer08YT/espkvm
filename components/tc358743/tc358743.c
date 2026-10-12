@@ -29,6 +29,9 @@ static const char *TAG = "tc358743";
 #define TC358743_PROBE_TRIES 3
 #define TC358743_PROBE_GAP_MS 5
 #define TC358743_PROBE_TIMEOUT_MS 50
+/* Never -1: one stuck transfer then held the chip lock forever (no picture,
+ * Reconnect timed out, the RTC on the same bus could not write). */
+#define TC358743_I2C_TIMEOUT_MS 200
 
 #define CHIPID 0x0000
 /* The register holds the chip id in the top byte and the revision in the
@@ -287,6 +290,7 @@ struct tc358743 {
     uint16_t fifo_set; /* FIFOCTL as last written */
     tc358743_edid_profile_t edid_profile;
     bool i2c_ok; /* tracks I2C health so a wedged bus is logged once, not per-register */
+    uint32_t i2c_fails; /* failed transfers, so a reading can tell it is not real */
 };
 
 /* Largest single register write: the 128-byte EDID block plus the 2-byte address. */
@@ -320,7 +324,13 @@ void tc358743_cfg_defaults_waveshare_pi(tc358743_cfg_t *c)
  * wedged bus here instead of one line per register. */
 static void i2c_note_result(tc358743_t *d, uint16_t reg, esp_err_t err)
 {
+    if (err != ESP_OK) {
+        d->i2c_fails++;
+    }
     if (err == ESP_OK) {
+        if (!d->i2c_ok) {
+            ESP_LOGI(TAG, "I2C works again");
+        }
         d->i2c_ok = true;
         return;
     }
@@ -341,7 +351,7 @@ static esp_err_t i2c_write_reg(tc358743_t *d, uint16_t reg, const void *data, si
     buf[0] = (uint8_t)(reg >> 8);
     buf[1] = (uint8_t)(reg & 0xff);
     memcpy(buf + 2, data, len);
-    esp_err_t err = i2c_master_transmit(d->i2c, buf, len + 2, -1);
+    esp_err_t err = i2c_master_transmit(d->i2c, buf, len + 2, TC358743_I2C_TIMEOUT_MS);
     i2c_note_result(d, reg, err);
     return err;
 }
@@ -349,7 +359,7 @@ static esp_err_t i2c_write_reg(tc358743_t *d, uint16_t reg, const void *data, si
 static esp_err_t i2c_read_reg(tc358743_t *d, uint16_t reg, void *data, size_t len)
 {
     uint8_t addr[2] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xff)};
-    esp_err_t err = i2c_master_transmit_receive(d->i2c, addr, sizeof(addr), data, len, -1);
+    esp_err_t err = i2c_master_transmit_receive(d->i2c, addr, sizeof(addr), data, len, TC358743_I2C_TIMEOUT_MS);
     i2c_note_result(d, reg, err);
     return err;
 }
@@ -908,6 +918,7 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
     ESP_RETURN_ON_FALSE(d && out, ESP_ERR_INVALID_ARG, TAG, "args");
 
     memset(out, 0, sizeof(*out));
+    const uint32_t fails = d->i2c_fails;
     out->hact = tc358743_read_hact_vact_htotal(d, &out->vact, &out->htotal, &out->vtotal);
 
     const uint8_t st = rd8(d, SYS_STATUS);
@@ -925,7 +936,8 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
         const uint32_t hz = (10000u + interval / 2u) / interval;
         out->hz = hz <= 255u ? (uint8_t)hz : 0u;
     }
-    return ESP_OK;
+    /* A failed read gives zeros, which look like "no signal": not a reading. */
+    return d->i2c_fails == fails ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 esp_err_t tc358743_get_avi_color_format(tc358743_t *d, uint8_t *out_y)

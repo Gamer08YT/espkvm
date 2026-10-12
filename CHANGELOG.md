@@ -7,6 +7,37 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-12
+
+### Added
+- **An original Xbox gamepad.** Settings -> Input -> Gamepad -> `xbox`: the
+  device shows the console an original Xbox pad (XID), alone, and the gamepad
+  panel drives it. White and Black are on LB and RB. The console's controller
+  port needs an adapter to a USB socket. The protocol comes from
+  [ZacharyLeahan's fork](https://github.com/ZacharyLeahan/espkvm), where it was
+  tried on a real Xbox; I have not tried this build on one yet.
+
+### Changed
+- **The Waveshare ESP32-P4-NANO-WIFI6-DB is now a tested board.** A user runs
+  it with a C790 from AliExpress, no problems. Wi-Fi has not been tried yet.
+- **The wire protocol is a component of its own.** The message codes and the
+  video frame header that `/ws` and `/video` use now live in
+  `components/kvm_proto`, a header-only component. The web server uses it, and
+  a client written in C can use the same file instead of copying the numbers.
+
+### Fixed
+- **"No signal" for good after a stuck I2C read (TC358743 boards).** The
+  driver waited forever for the HDMI chip. One read that never ended held the
+  chip, so the picture never came back, Reconnect HDMI said `ESP_ERR_TIMEOUT`
+  and an RTC on the same bus stopped working, until a restart. Reads and
+  writes now give up after 200 ms and the bus is cleared. A failed read is
+  no longer taken for a lost signal, so it does not restart the capture.
+- **A source already above 1080p at boot.** The capture took the mode the
+  source was sending without checking it, so a 1920x1200 picture at power-on
+  would have been written past the frame buffers. It now starts at the
+  largest mode and refuses the bigger one, as it already did after boot.
+  Found by ZacharyLeahan in his fork.
+
 ## [0.63.0] - 2026-10-11
 
 ### Added

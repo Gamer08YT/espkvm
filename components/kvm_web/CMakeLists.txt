@@ -18,6 +18,7 @@ idf_component_register(
         esp_http_server
         esp_https_server
     PRIV_REQUIRES
+        kvm_proto
         tcp_transport
         esp_driver_pcnt
         esp_driver_ledc

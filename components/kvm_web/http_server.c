@@ -78,6 +78,7 @@
 #include "kvm_thermal.h"
 #include "kvm_tls.h"
 #include "kvm_acme.h"
+#include "kvm_proto.h"
 #include "usb_hid.h"
 #include "video_frame.h"
 
@@ -2757,50 +2758,8 @@ extern const char icon_192_end[] asm("_binary_icon_192_png_end");
 extern const char icon_512_start[] asm("_binary_icon_512_png_start");
 extern const char icon_512_end[] asm("_binary_icon_512_png_end");
 
-/*
- * Control channel, version 2. All frames are binary and fixed length.
- *
- *   client -> device
- *     0x01 abs mouse   buttons, x:u16, y:u16 (0..32767), wheel:i8, pan:i8
- *     0x02 rel mouse   buttons, dx:i16, dy:i16, wheel:i8, pan:i8
- *     0x03 keyboard    modifier, six key usages
- *     0x04 consumer    usage:u16
- *     0x05 release all
- *     0x06 ping
- *     0x07 take control   (become the controlling client, demoting whoever held it)
- *     0x08 gamepad     buttons:u16, hat:u8 (8 none), lx, ly, rx, ry:u8 (128 centre)
- *   device -> client
- *     0x81 status      flags:u8 (bit0 target attached), leds:u8
- *     0x82 pong
- *     0x83 control      state:u8 (0 held by another, 1 you hold it, 2 free)
- */
-enum {
-    WS_C2D_MOUSE_ABS = 0x01,
-    WS_C2D_MOUSE_REL = 0x02,
-    WS_C2D_KEYBOARD = 0x03,
-    WS_C2D_CONSUMER = 0x04,
-    WS_C2D_RELEASE_ALL = 0x05,
-    WS_C2D_PING = 0x06,
-    WS_C2D_TAKEOVER = 0x07,
-    WS_C2D_PAD = 0x08,
-
-    WS_D2C_STATUS = 0x81,
-    WS_D2C_PONG = 0x82,
-    WS_D2C_CONTROL = 0x83,
-    /* An update is happening: phase, then percent. Every console gets it, not
-     * only the one that started it - the others would otherwise watch the
-     * device go quiet with no idea why. */
-    WS_D2C_UPDATE = 0x84,
-};
-
-
-
-/* WS_D2C_CONTROL states. */
-enum {
-    CTRL_HELD_OTHER = 0, /* another client is in control; input here is ignored */
-    CTRL_YOU = 1,        /* this client holds control */
-    CTRL_FREE = 2,       /* nobody holds control; interacting takes it */
-};
+/* Control channel, version 2: the messages and the states are in kvm_proto.h,
+ * which a client in C can use as well. */
 
 static SemaphoreHandle_t s_ws_mu;
 static int s_ws_fd = -1;
@@ -3664,20 +3623,12 @@ static void stream_worker_task(void *arg)
  * frame forever with no way to say so. Here the absence of a signal is a
  * message like any other.
  *
- * Every frame is prefixed with a fixed 12-byte header:
- *
- *   0      magic 'K'
- *   1      payload type: 1 JPEG, 2 H.264 Annex-B
- *   2..3   width, height of this frame
- *   4..7   sequence number, so a client can see what it missed
- *   8..11  milliseconds since boot, for latency measurement
+ * Every frame is prefixed with a fixed 12-byte header, laid out in kvm_proto.h.
  *
  * The type is per frame rather than per connection because the codec can
  * change under a running viewer, and a decoder fed the wrong bytes fails in
  * ways that are hard to read.
  */
-#define VIDEO_HDR_LEN 12
-#define VIDEO_MAGIC 0x4bu
 
 #define VIDEO_MAX_CLIENTS 4
 
@@ -3687,8 +3638,6 @@ static void stream_worker_task(void *arg)
  * short enough that a truly gone viewer stops holding up the pump. */
 #define VIDEO_STALL_DROP_FRAMES 90
 
-/* The first byte of a subscriber's first message: what it wants to be sent. */
-#define WS_SUBSCRIBE_TEXT 2
 
 static int s_video_fds[VIDEO_MAX_CLIENTS];
 /**
@@ -4162,18 +4111,14 @@ static void video_pump_task(void *arg)
         kvm_video_status_t vs;
         capture_status_get(&vs);
         const uint32_t pts = (uint32_t)(esp_timer_get_time() / 1000);
-        packet[0] = VIDEO_MAGIC;
-        packet[1] = (uint8_t)f.payload;
-        packet[2] = (uint8_t)(vs.hres & 0xff);
-        packet[3] = (uint8_t)(vs.hres >> 8);
-        packet[4] = (uint8_t)(vs.vres & 0xff);
-        packet[5] = (uint8_t)(vs.vres >> 8);
-        packet[6] = (uint8_t)(f.seq & 0xff);
-        packet[7] = (uint8_t)((f.seq >> 8) & 0xff);
-        packet[8] = (uint8_t)((f.seq >> 16) & 0xff);
-        packet[9] = (uint8_t)((f.seq >> 24) & 0xff);
-        packet[10] = (uint8_t)(pts & 0xff);
-        packet[11] = (uint8_t)((pts >> 8) & 0xff);
+        const kvm_video_hdr_t hdr = {
+            .type = (uint8_t)f.payload,
+            .width = (uint16_t)vs.hres,
+            .height = (uint16_t)vs.vres,
+            .seq = f.seq,
+            .pts_ms = (uint16_t)pts,
+        };
+        kvm_video_hdr_write(packet, &hdr);
         memcpy(packet + VIDEO_HDR_LEN, f.data, f.len);
         const size_t packet_len = VIDEO_HDR_LEN + f.len;
         const bool keyframe = f.keyframe;

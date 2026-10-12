@@ -84,7 +84,7 @@ static const char *const s_targetos_choices[] = {"auto", "windows", "macos", "li
 static const char *const s_baud_choices[] = {"9600",   "19200",  "38400",  "57600",
                                              "115200", "230400", "460800", "921600"};
 static const char *const s_pad_choices[] = {"off", "switch", "switch_alone", "xinput",
-                                            "xinput_alone"};
+                                            "xinput_alone", "xbox"};
 /* What the button on the box does. Order must match k_actions[] in
    components/kvm_sched/button.c. */
 static const char *const s_btn_action_choices[] = {"nothing", "power", "power off (hold)", "reset",
@@ -380,10 +380,12 @@ static const kvm_setting_t s_settings[] = {
         .help = "A game controller for the target, and a gamepad panel in the console; a "
                 "controller plugged into your own computer works through it too. "
                 "\"switch\": a HORI Pokken pad, for a Nintendo Switch. \"xinput\": a "
-                "wired Xbox 360 pad, for Windows, a Steam Deck and Linux. The pad joins the "
-                "keyboard and mouse; the \"_alone\" choices show the pad and nothing else, "
-                "the way the real one looks - Windows needs that for the Xbox pad, and a "
-                "console may ignore a pad with company. Takes effect after a restart.",
+                "wired Xbox 360 pad, for Windows, a Steam Deck and Linux. \"xbox\": the "
+                "original Xbox pad, always alone; the console's controller port needs an "
+                "adapter to a USB socket. The pad joins the keyboard and mouse; the "
+                "\"_alone\" choices show the pad and nothing else, the way the real one "
+                "looks - Windows needs that for the Xbox pad, and a console may ignore a pad "
+                "with company. Takes effect after a restart.",
         .min = 0, .max = ENUM_MAX(s_pad_choices), .def = 0, .choices = s_pad_choices,
         .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
     },
