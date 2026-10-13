@@ -30,7 +30,7 @@
  *   4..5   height
  *   6..9   sequence number, so a client can see what it missed
  *   10..11 low 16 bits of the device's milliseconds since boot
- * A client's first message subscribes (KVM_VIDEO_SUB_TEXT as its first byte
+ * A client's first message subscribes (WS_SUBSCRIBE_TEXT as its first byte
  * asks for the text screen instead); any later message asks for a keyframe.
  */
 #pragma once
