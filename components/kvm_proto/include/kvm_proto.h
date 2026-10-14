@@ -48,11 +48,18 @@ enum {
     WS_C2D_PING = 0x06,
     WS_C2D_TAKEOVER = 0x07,
     WS_C2D_PAD = 0x08,
+    /* On /video: "frame <seq> arrived". A client that sends these gets at most
+     * VIDEO_ACK_WINDOW frames ahead of its acks instead of a full TCP buffer. */
+    WS_C2D_VIDEO_ACK = 0x09,
 
     WS_D2C_STATUS = 0x81,
     WS_D2C_PONG = 0x82,
     WS_D2C_CONTROL = 0x83,
     WS_D2C_UPDATE = 0x84,
+    /* On /video, once after subscribing: this device takes WS_C2D_VIDEO_ACK.
+     * Older firmware reads any later message as a keyframe request, so a
+     * client acks only after it has seen this. */
+    WS_D2C_VIDEO_ACKS = 0x85,
 };
 
 /* WS_D2C_CONTROL states. */
@@ -70,6 +77,7 @@ enum {
 #define VIDEO_TYPE_H264 2
 /* The first byte of a subscriber's first message: what it wants to be sent. */
 #define WS_SUBSCRIBE_TEXT 2
+#define VIDEO_ACK_WINDOW 2
 
 typedef struct {
     uint8_t type;

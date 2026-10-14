@@ -110,6 +110,10 @@ CONFIG_LWIP_TCP_WND_DEFAULT=65535
 # a burst overflows it, lwIP drops the rest until its next timer (125 ms), and
 # every upload is stuck at ~64 KB/s per connection whatever the link.
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=48
+# Tailscale puts every tunnelled packet on one UDP socket. A 64 KB window
+# arrives as ~45 datagrams in a burst; the default mailbox of 6 dropped most
+# of them and a viewer over the tunnel got ~50 KB/s.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=6144
 
 # Resumption: a full handshake costs this chip ~330 ms and the console opens

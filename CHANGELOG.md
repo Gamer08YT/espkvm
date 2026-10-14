@@ -7,12 +7,20 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-10-14
+
 ### Added
 - **A drawing of where this screen sits.** Settings -> Input -> Several
   screens now draws the whole desktop and the captured screen inside it,
   from the four saved numbers, so a wrong "Find this screen" result shows at
   a glance. A screen that does not fit inside the desktop is drawn in red,
   with a hint to run it again.
+- **Frame acks for viewers that want them.** A client can ack each video
+  frame; the device then keeps at most two frames on the way to it, so a
+  slow link shows the newest frame instead of a queue of old ones. The
+  console sends them too. The device says on the video socket that it takes
+  acks, and a client only acks after that: older firmware reads any extra
+  message there as a keyframe request.
 
 ### Fixed
 - **Settings: a typed number could land in the wrong field.** The settings
@@ -24,6 +32,38 @@ bumps the patch).
   the field being typed into dropped the keys, and a redraw put its old
   value (often 0) back. Number and text fields now stay on, and a field keeps
   what is typed into it until it is saved.
+- **Video over Tailscale broke on a slow link.** A send that timed out
+  wrote half a WebSocket frame, and the viewer lost track of the frames: a
+  broken picture, then a closed socket. A frame is now sent whole, or the
+  socket is closed. Each connection has its own send lock, so one slow
+  viewer no longer holds up replies and pongs to everyone else.
+- **Video over Tailscale crawled.** The tunnel delivers everything to one
+  UDP socket, which held only 6 packets. A burst of video came as ~45, and
+  most were dropped. It holds 64 now.
+- **Tailscale between two ESP32 devices.** Several fixes in the Tailscale
+  client: a tunnel with no session now starts one when there is traffic;
+  it starts over when the other side restarted; two devices no longer
+  bounce "call me" messages at each other without end; and direct UDP is
+  no longer marked for the Wi-Fi voice queue, which kept the direct path
+  from working, so all traffic went through the slow relay. And a new
+  handshake no longer replaces one still on its way: after a restart the
+  two sides could not meet again, because each reply came back for a
+  handshake that was already gone. A tunnel also no longer starts a new
+  handshake every 15-40 s: not when it moves between the direct path and
+  the relay, and not when an idle peer does not answer its keepalives.
+- **A viewer dropped when several connections came at once.** The web
+  server closes its least recently used connection when all its slots are
+  taken, and a new connection counts as the most recent one. A page load
+  elsewhere could close a live video or control socket. Open websockets now
+  stay ahead of new connections.
+- **Every small message waited 200-450 ms.** Nagle's algorithm was on for
+  the console's sockets, so a pong, an input echo or the last piece of a
+  frame waited for the ACK of what went before, and the viewer delays its
+  ACKs. It is off now; a ping round trip on Wi-Fi dropped from ~440 ms to
+  ~15 ms.
+- **Tailscale on a board with Ethernet and Wi-Fi** told other devices only
+  the address of its default network, so a device on the other one could
+  not reach it directly. It now gives the addresses of both.
 
 ## [0.64.0] - 2026-10-12
 

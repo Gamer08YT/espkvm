@@ -188,14 +188,10 @@ static void ts_reconcile(void)
         .auth_key = s_auth,
         .device_name = s_name[0] ? s_name : NULL,
         .enable_derp = true,
-        /* DISCO/STUN NAT-traversal is deliberately OFF: its constant probing of
-         * every tailnet peer burns CPU this device needs for real-time video
-         * capture and encoding. We relay through DERP instead - higher latency,
-         * but a KVM's control channel is low-bandwidth and this keeps the video
-         * pipeline fed. The heartbeat/stun intervals below are a backstop in case
-         * a build re-enables them. */
-        .enable_stun = false,
-        .enable_disco = false,
+        /* Direct paths. microlink ignores these two flags and always runs
+         * STUN and DISCO; the intervals below keep that probing slow. */
+        .enable_stun = true,
+        .enable_disco = true,
         .disco_heartbeat_ms = 30000,
         .stun_interval_ms = 60000,
         /* Reach the hosted control plane, which is HTTPS-only. Operators pointing
