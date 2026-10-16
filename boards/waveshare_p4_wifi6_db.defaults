@@ -14,9 +14,9 @@
 # hardware/ESP32-P4-WIFI6-DB.pdf) confirms the 51k SDIO pull-ups, so the WIFI6's
 # internal ones stay on, and GPIO 6 to the C5's IO2. One difference that
 # matters: the camera connector J1 is the 22-pin 0.5 mm (Pi 5) kind, not the
-# WIFI6's 15-pin - a C790 needs a 15-to-22-pin ribbon.
+# WIFI6's 15-pin - use the C790's 22-pin ribbon.
 #
-# NOT YET VERIFIED ON HARDWARE.
+# Tested on hardware 2026-10-16: Wi-Fi, capture through a C792, HID.
 
 # --- silicon revision -------------------------------------------------------
 # An NRW32X, so rev 3.x only: one image, no pre-3.0 twin.

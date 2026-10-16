@@ -135,12 +135,13 @@ The M5Stack Unit PoE-P4 takes its own [Add-on Display In](https://shop.m5stack.c
 | [Waveshare ESP32-P4-NANO-WIFI6-DB](https://espkvm.io/boards/p4-nano-wifi6-db/) | Ethernet, 5 GHz Wi-Fi | 3.x | tested |
 | [Waveshare ESP32-P4-Module-DEV-KIT](https://espkvm.io/boards/p4-module-devkit/) | Ethernet, Wi-Fi | 1.x or 3.x | untested |
 | [Espressif ESP32-P4X-C5-Function-EV](https://espkvm.io/boards/funcev-c5/) | Ethernet, 5 GHz Wi-Fi | 3.x | untested |
-| [Waveshare ESP32-P4-WIFI6-DB](https://espkvm.io/boards/p4-wifi6-db/) | 5 GHz Wi-Fi only | 3.x | untested |
+| [Waveshare ESP32-P4-WIFI6-DB](https://espkvm.io/boards/p4-wifi6-db/) | 5 GHz Wi-Fi only | 3.x | tested |
 | [VIEWE ESP32-P4-Pi](https://espkvm.io/boards/viewe-p4-pi/) | Ethernet, Wi-Fi | 1.x | untested |
 | [M5Stack Unit PoE-P4X](https://espkvm.io/boards/m5-poe-p4x/) | Ethernet with PoE | 3.x | untested |
 
 "Untested" means the image is built from the vendor's schematic and nobody has
-run it yet; if you have one, say how it went. Rev 3.x silicon runs H.264 three
+run it yet; if you have one, say how it went. Another P4 board? [Every ESP32-P4
+board I have looked at](https://espkvm.io/boards/all/) says whether it can work. Rev 3.x silicon runs H.264 three
 times faster at 1080p, and it takes its own image: the boot log prints the
 revision, and so does the chip, **ESP32-P4NRW32X** with an X being rev 3.x.
 

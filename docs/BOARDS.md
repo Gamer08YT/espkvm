@@ -339,7 +339,9 @@ header, and no Ethernet. Waveshare's pin table matches the WIFI6 apart from the
 co-processor, so the build is the WIFI6's with the C5 and the revision changed:
 `boards/waveshare_p4_wifi6.defaults` + `boards/waveshare_p4_wifi6_db.defaults`.
 One difference to plan for: its camera connector is the 22-pin 0.5 mm (Pi 5)
-kind, not the WIFI6's 15-pin, so a C790 needs a 15-to-22-pin ribbon.
+kind, not the WIFI6's 15-pin: use the 22-pin ribbon that comes with the C790.
+Tested on hardware: Wi-Fi through the C5, a 1080p30 picture from a C792,
+keyboard and mouse.
 
 </td>
 </tr>
@@ -415,14 +417,15 @@ Geekworm puts a cable for it in the box. Nothing reads it yet; the pinout and
 what wiring it would take are in
 [HARDWARE-NOTES.md](HARDWARE-NOTES.md).
 
-The [Geekworm C792](https://wiki.geekworm.com/C792) is the same TC358743 with a
-GSV2001 splitter in front, so it should work too - **not tested here**, and
-with one thing to watch. This firmware limits the input by writing an EDID into
-the TC358743, because two CSI lanes carry about 81 Mpixel/s and a mode above
-that gives a black frame rather than a slower one. With a splitter ahead of the
-bridge the source may be reading the splitter's EDID instead, so if you see a
-black screen at 1080p60, that is the first thing to suspect. Use its 15-pin
-(2-lane) connector, and power it from its own 5 V input as Geekworm advises.
+The [Geekworm C792](https://espkvm.io/boards/c792/) is the same TC358743 with a
+GSV2001 splitter in front and an HDMI pass-through for a local monitor. The
+firmware needs nothing new for it. One thing to know: with a monitor on the
+pass-through, the source reads that monitor's EDID, not the one this firmware
+writes into the TC358743, and may pick 1080p60. Two CSI lanes carry about 81
+Mpixel/s, so that gives no picture and a "too fast" note in the console. Set
+the source to 1080p30 or 720p60, or unplug the monitor. A 4K source arrives as
+1080p at the same refresh rate. Power the board from its own 5 V input, as
+Geekworm advises.
 
 </td>
 <td valign="top">

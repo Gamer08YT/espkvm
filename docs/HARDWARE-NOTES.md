@@ -99,6 +99,14 @@ The lesson for the firmware was the diagnosis, not a fix: the device knew the
 difference all along and did not say it. It says it now, in the console and in
 `GET /api/v1/system/usbprobe`.
 
+## Waveshare ESP32-P4-WIFI6-POE-ETH: PoE and the target's 5 V
+
+Reported in [#54](https://github.com/orgs/espkvm/discussions/54) and confirmed
+by Waveshare's support: on PoE, the board's USB-A port to the target must not
+carry the target's 5 V. The board's PoE supply and the target's port would both
+drive the same line. Cut the 5 V wire in the USB cable, or power the board from
+USB and leave PoE off. Not measured here; I have no such board.
+
 ## M5Stack Unit PoE-P4 and its LT6911D add-on
 
 The Add-on Display In carries an LT6911D, and its reset line - CAM_RST on

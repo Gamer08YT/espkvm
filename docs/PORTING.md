@@ -64,37 +64,10 @@ as it comes.
 
 ### Boards that have been looked at
 
-Read from schematics and vendor documentation, not from hardware, unless the
-board has its own overlay in `boards/`:
-
-| Board | Verdict |
-|---|---|
-| Waveshare P4-ETH, WIFI6, WIFI6-DEV-KIT, WIFI6-POE-ETH, Module-DEV-KIT, NANO | supported; overlays in `boards/` |
-| Espressif ESP32-P4 Function EV | supported; the rev 3.x reference, plus `funcev-rev1` for earlier units with a rev 1.x chip |
-| Espressif ESP32-P4X-C5-Function-EV-Board | supported, not run yet; `boards/funcev_c5_p4.defaults` on top of the Function EV's. The C5 sits on the C6's SDIO pins |
-| Waveshare ESP32-P4-WIFI6-DB | supported, not run yet; `boards/waveshare_p4_wifi6_db.defaults` on top of the WIFI6's. NRW32X, rev 3.x only, no Ethernet |
-| Guition ESP32-P4-M3-Dev | supported, community-tested |
-| M5Stack Unit PoE-P4 / PoE-P4X | **yes**, hardware-checked on the pre-3.0 one: Ethernet, console and a picture at 23 fps at 1280x720. Its add-on is an LT6911D, so the reset line is active high and MJPEG is the only codec below rev 3.0 - see `HARDWARE-NOTES.md` |
-| Waveshare ESP32-P4-NANO-WIFI6-DB | supported; `boards/nano_wifi6_db_p4.defaults`. Rev 3.x silicon only, and the first board here whose radio is an **ESP32-C5** |
-| DFRobot FireBeetle 2 ESP32-P4 / AI Kit | supported; `boards/firebeetle2_p4.defaults`. WiFi only - no wired link |
-| VIEWE ESP32-P4-Pi | supported; `boards/viewe_p4_pi.defaults`. Three USB ports - the Type-A one is a host, and the OTG-HS has a Type-C of its own |
-| MakerGo / Osprey ESP32P4C5 | 15-pin CSI and an ESP32-C5, but RMII only on a header - Ethernet needs your own PHY |
-| Wireless-Tag WT99P4C5-S1 | **candidate**: 32 MB PSRAM, IP101 Ethernet, a C5 on SDIO, HS OTG on a Type-C in device mode, microSD. The CSI is a 22-pin 0.5 mm FPC whose pinout is not published - ask whether it is the Raspberry Pi order with 3.3 V and I2C |
-| Wireless-Tag WT9932P4C61-TINY | **candidate, Wi-Fi only**: the camera connector is the best documented of all (15-pin Pi order, 3.3 V on 15, I2C on 13/14) and the OTG-HS is on a Type-C. Needs the 32 MB PSRAM version, and whether the C61 is on SDIO or SPI is not stated |
-| Wireless-Tag WTDKP4C5-S1 | **candidate with caveats**: 16 or 32 MB PSRAM versions, the P4 as a USB device on its Type-C, a C5 - but the guide contradicts itself on the camera connector, there is no microSD, and RMII is only on a header |
-| Makerfabs MaTouch ESP32-P4 10.1" | **candidate**: NRW32, IP101 Ethernet and a C6, microSD - but the camera is a built-in SC2336 on an unstated connector, and which of its two USB ports is high speed is not said |
-| Guition JC1060P470 (7", Ethernet version) | **maybe**: 32 MB PSRAM, a C6, microSD, Ethernet and a camera on one variant - too little published to decide on the camera connector, flash size and USB |
-| M5Stack Stamp-P4 | **maybe**: NRW32, but the camera is on a board-to-board connector (needs an adapter), there is no PHY and Wi-Fi needs the C6 add-on |
-| Waveshare ESP32-P4-WIFI6-Touch-LCD panels (3.5", 4B, 4C, 7B, ...) | **maybe**: 32 MB PSRAM, a C6, HS OTG, microSD, no Ethernet. The 3.5" has a camera built in; on the others the camera connector is not stated |
-| Elecrow CrowPanel Advanced 7" | **unclear**: PSRAM size and the camera connector are not published |
-| LILYGO T-Display-P4, Seeed reTerminal D1001, Espressif ESP32-P4X-EYE | **no**: the camera is built in and there is no free CSI connector |
-| M5Stack Tab5 | everything is there, but the CSI is taken by its own camera and the tablet is a lot of board to hide behind a server |
-| Olimex ESP32-P4-PC | **no**: 32 MB / 16 MB, IP101 Ethernet and a 15-pin CSI, all correct - and then an FE1.1s hub sits on the OTG-HS, so the port is permanently a host and can never present a keyboard |
-| Olimex ESP32-P4-DevKit | **no**: same memory, same PHY, same connector, but D+/D- from the OTG-HS are not brought out anywhere; the Type-C is the serial/JTAG bridge |
-| Waveshare ESP32-P4-Pico, ESP32-P4-Core-DEV-KIT | **no**: no network at all - no PHY and no co-processor. (The Core kit's CSI is also the 22-pin one.) |
-| Espressif ESP32-P4-EYE | **no**: a camera kit; the CSI is occupied by its own sensor |
-| Waveshare ESP32-P4-86-Panel-ETH-2RO | **no**: the CSI connector is not fitted on that variant |
-| LILYGO T-Halow P4 | **no**: see above |
+Every ESP32-P4 board I have looked at, supported or not, with what each one
+has of the four needs above and why the others cannot work, is on one page:
+[espkvm.io/boards/all](https://espkvm.io/boards/all/). Its data lives in
+the site repo, in `_data/p4-boards.json`, so the verdicts are kept in one place.
 
 If a board is not here, open an issue with a link to its schematic.
 
