@@ -827,6 +827,17 @@ static void follow_settings(void)
      * encoder applies a changed value at the next IDR anyway. */
 }
 
+/* The SPS rewrite moves the whole IDR through the CPU cache. Write it back
+ * now: a dirty line evicted later, after the encoder has DMA'd the next frame
+ * into this slot, would overwrite part of that frame. Found by Zachary Leahan
+ * in his fork (ac90156). */
+static size_t h264_idr_add_restriction(uint8_t *dst, size_t len, size_t cap)
+{
+    len = h264_sps_add_restriction(dst, len, cap);
+    (void)esp_cache_msync(dst, len, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    return len;
+}
+
 #if !CAPTURE_DIRECT_ENCODE
 /* Encode one filled YUV buffer and publish it. Runs on the encode task, so it
  * overlaps the PPA conversion of the following frame. */
@@ -887,7 +898,7 @@ static void h264_encode_job(const h264_job_t *job)
     wedge_watch(is_idr, out.length);
     if (is_idr) {
         /* Tell decoders frames are never reordered; see h264_sps.h. */
-        out.length = (uint32_t)h264_sps_add_restriction(dst, out.length, cap);
+        out.length = (uint32_t)h264_idr_add_restriction(dst, out.length, cap);
     }
     video_frame_publish(slot, out.length, is_idr);
     capture_status_add_frame(out.length);
@@ -988,7 +999,7 @@ static esp_err_t h264_encode(capture_ctx_t *c, const void *src, bool force_publi
     const bool is_idr = out.frame_type == ESP_H264_FRAME_TYPE_IDR;
     wedge_watch(is_idr, out.length);
     if (is_idr) {
-        out.length = (uint32_t)h264_sps_add_restriction(dst, out.length, cap);
+        out.length = (uint32_t)h264_idr_add_restriction(dst, out.length, cap);
     }
     video_frame_publish(wslot, out.length, is_idr);
     capture_status_add_frame(out.length);

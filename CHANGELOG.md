@@ -12,6 +12,14 @@ bumps the patch).
   and its version as the firmware version with the microlink version in
   brackets.
 
+### Fixed
+- After a keyframe's SPS was rewritten, part of it could stay in the CPU
+  cache and later overwrite a newer frame in the same buffer. It is now
+  written back at once. Found by Zachary Leahan.
+- On plain HTTP (the hotspot) a slow send could cut a WebSocket frame in
+  the middle. Writes are now finished in full, as on HTTPS. Found by
+  Zachary Leahan.
+
 ## [0.66.0] - 2026-10-18
 
 ### Added

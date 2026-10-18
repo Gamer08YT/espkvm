@@ -2896,6 +2896,26 @@ static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_
     return done == buf_len ? (int)done : HTTPD_SOCK_ERR_FAIL;
 }
 
+/* The same for plain HTTP (the hotspot): a blocking send() with a timeout
+ * also returns a short count. Found by Zachary Leahan in his fork (3585933). */
+static int locked_http_send(httpd_handle_t hd, int sockfd, const char *buf, size_t buf_len, int flags)
+{
+    (void)hd;
+    const int slot = tx_lock(sockfd);
+    const int64_t deadline = esp_timer_get_time() + 5000000;
+    size_t done = 0;
+    while (done < buf_len && esp_timer_get_time() < deadline) {
+        const ssize_t ret = send(sockfd, buf + done, buf_len - done, flags);
+        if (ret > 0) {
+            done += (size_t)ret;
+        } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            break;
+        }
+    }
+    tx_unlock(slot);
+    return done == buf_len ? (int)done : HTTPD_SOCK_ERR_FAIL;
+}
+
 static esp_err_t ws_send_frame(httpd_handle_t server, int fd, httpd_ws_frame_t *frame)
 {
     if (!server || fd < 0 || !s_tx_mu) {
@@ -3059,11 +3079,10 @@ static esp_err_t http_sess_open_cb(httpd_handle_t hd, int sockfd)
     if (!s_tx_mu || sockfd < 0 || xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY) != pdTRUE) {
         return ESP_OK;
     }
-    /* On the TLS server every write to this session - ours and the server's
-     * own - now takes its write lock. See locked_ssl_send. */
-    if (httpd_sess_get_transport_ctx(hd, sockfd)) {
-        (void)httpd_sess_set_send_override(hd, sockfd, locked_ssl_send);
-    }
+    /* Every write to this session - ours and the server's own - now takes its
+     * write lock and is finished in full. See locked_ssl_send. */
+    (void)httpd_sess_set_send_override(hd, sockfd,
+        httpd_sess_get_transport_ctx(hd, sockfd) ? locked_ssl_send : locked_http_send);
     bool listed = false;
     for (int i = 0; i < TX_MAX_SOCKETS; i++) {
         if (s_tx_fds[i] == sockfd) {
