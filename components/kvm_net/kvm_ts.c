@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_app_desc.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -187,6 +188,8 @@ static void ts_reconcile(void)
     microlink_config_t cfg = {
         .auth_key = s_auth,
         .device_name = s_name[0] ? s_name : NULL,
+        .app_name = "ESP-KVM",
+        .app_version = esp_app_get_description()->version,
         .enable_derp = true,
         /* Direct paths. microlink ignores these two flags and always runs
          * STUN and DISCO; the intervals below keep that probing slow. */

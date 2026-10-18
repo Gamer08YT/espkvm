@@ -7,6 +7,11 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Changed
+- The Tailscale admin console now shows the device as "Linux ESP-KVM",
+  and its version as the firmware version with the microlink version in
+  brackets.
+
 ## [0.66.0] - 2026-10-18
 
 ### Added

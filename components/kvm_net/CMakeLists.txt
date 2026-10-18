@@ -53,6 +53,7 @@ idf_component_register(
         kvm_storage
         esp_eth
         esp_event
+        esp_app_format
         espressif__mdns
         microlink
         wireguard_lwip
