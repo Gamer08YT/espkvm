@@ -122,6 +122,15 @@ static const kvm_setting_t s_settings[] = {
         .min = 500, .max = 20000, .def = 4000, .requires_cap = KVM_CAP_H264,
     },
     {
+        .key = "webrtc_enable", .section = "video", .group = "Picture", .type = KVM_VT_BOOL,
+        .title = "Allow WebRTC",
+        .help = "Let the console take H.264 over WebRTC: UDP, so a lost packet costs one frame "
+                "instead of holding up the ones behind it. Only a signed-in console can start "
+                "it, and the video is encrypted (DTLS-SRTP). Off sends all video over the "
+                "WebSocket.",
+        .def = 1, .requires_cap = KVM_CAP_H264,
+    },
+    {
         .key = "vid_fps_max", .section = "video", .group = "Picture", .type = KVM_VT_INT,
         .title = "Frame rate limit",
         .help = "Upper bound on encoded frames per second. Lower it to save bandwidth "

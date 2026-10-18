@@ -131,6 +131,13 @@ bool video_frame_upload_active(void);
  */
 void video_frame_request_keyframe(void);
 
+/**
+ * The same, to repair a broken reference chain, at most every 300 ms whoever
+ * asks: IDRs are the biggest frames and would feed the overload they repair.
+ * The WebSocket and WebRTC senders share this one limit.
+ */
+void video_frame_request_repair_keyframe(void);
+
 /** For the codec: consume a pending request. */
 bool video_frame_take_keyframe_request(void);
 

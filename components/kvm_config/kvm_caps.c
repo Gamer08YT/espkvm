@@ -92,6 +92,13 @@ static const cap_desc_t s_desc[KVM_CAP_COUNT] = {
     [KVM_CAP_RUNBOOK] = {"runbooks", true, NULL},
     [KVM_CAP_SCHED] = {"scheduler", true, NULL},
     [KVM_CAP_NOTIFY] = {"notify", true, NULL},
+    [KVM_CAP_WEBRTC] = {"webrtc",
+#if CONFIG_KVM_ENABLE_WEBRTC
+                        true,
+#else
+                        false,
+#endif
+                        "webrtc_enable"},
 };
 
 typedef struct {

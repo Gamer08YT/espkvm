@@ -36,6 +36,8 @@ const httpd_uri_t *url_fetch_routes(size_t *count);
 const httpd_uri_t *netlog_api_routes(size_t *count);
 /** GET /api/v1/system/pinprobe: how fast some pins switch. See pinprobe_api.c. */
 const httpd_uri_t *pinprobe_api_routes(size_t *count);
+/** Offer/answer for the WebRTC video. See webrtc_api.c. */
+const httpd_uri_t *webrtc_api_routes(size_t *count);
 /** A session went away; forget it as a serial console client. */
 void serial_api_drop(int fd);
 

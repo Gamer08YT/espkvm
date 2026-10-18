@@ -87,6 +87,8 @@ be given a URL.
 | `GET /api/v1/video/frame.jpg` | one frame as a JPEG, on either codec |
 | `GET /api/v1/screen/text` | the screen as characters when the target is in a text mode; 204 when it is showing a picture |
 | `GET /stream` | MJPEG as `multipart/x-mixed-replace`; answers 409 while H.264 is selected |
+| `POST /api/v1/video/webrtc` | WebRTC signaling: `{"sdp": offer}` in, `{"id", "sdp": answer}` out, no trickle. The offer must have one video m-line with H.264 packetization-mode 1 and a SHA-256 fingerprint. 409 while MJPEG runs or WebRTC is off, 503 when it is not ready. The session ends with the sign-in |
+| `DELETE /api/v1/video/webrtc?id=N` | close WebRTC session N; 204 |
 
 ### Recording
 

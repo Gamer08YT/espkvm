@@ -39,6 +39,9 @@
 #include "kvm_ts.h"
 #include "kvm_tls.h"
 #include "kvm_wg.h"
+#if CONFIG_KVM_ENABLE_WEBRTC
+#include "kvm_webrtc.h"
+#endif
 #include "kvm_thermal.h"
 #include "kvm_settings.h"
 #include "kvm_notify.h"
@@ -741,6 +744,13 @@ void app_main(void)
      * here must not leave a freshly-flashed but reachable image unconfirmed and
      * bound for rollback.
      */
+#if CONFIG_KVM_ENABLE_WEBRTC
+    /* After the confirm for the same reason; its certificate is made in the
+     * background, so the first offer may have to wait a second for it. */
+    if (kvm_webrtc_init(kvm_auth_session_alive) != ESP_OK) {
+        ESP_LOGW(TAG, "WebRTC did not start; the WebSocket still carries the video");
+    }
+#endif
     /* MQTT bridge: build its timer/state now; it connects later, once every
      * capability it advertises to Home Assistant has been settled. */
     ESP_ERROR_CHECK(kvm_mqtt_init());

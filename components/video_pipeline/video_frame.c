@@ -392,6 +392,16 @@ void video_frame_request_keyframe(void)
     s.keyframe_wanted = true;
 }
 
+void video_frame_request_repair_keyframe(void)
+{
+    static int64_t s_last_us;
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us - s_last_us > 300000) {
+        s_last_us = now_us;
+        video_frame_request_keyframe();
+    }
+}
+
 bool video_frame_take_keyframe_request(void)
 {
     if (!s.keyframe_wanted) {

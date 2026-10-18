@@ -47,6 +47,9 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== one-time passwords =="
     sh "$here/components/kvm_web/test/run.sh"
     echo
+    echo "== WebRTC: SRTP, STUN, H.264 over RTP, SDP =="
+    sh "$here/components/kvm_webrtc/test/run.sh"
+    echo
 fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then

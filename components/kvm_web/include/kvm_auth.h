@@ -124,6 +124,16 @@ void kvm_auth_forget_socket(int fd);
 bool kvm_auth_socket_ok(int fd);
 
 /**
+ * The sign-in a request was made under, as the SHA-256 the device keeps of it,
+ * for something that outlives the request and must end with the sign-in.
+ * Call it after kvm_auth_check() passed. All zero when login is off.
+ */
+bool kvm_auth_session_of(httpd_req_t *req, uint8_t out[32]);
+
+/** Whether that sign-in still holds. Does not count as using it. */
+bool kvm_auth_session_alive(const uint8_t hash[32]);
+
+/**
  * Refuse a WebSocket by closing it. The upgrade has already been answered by
  * the time a handler runs, so there is no status line left to send.
  */

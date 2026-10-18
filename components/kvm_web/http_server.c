@@ -3728,6 +3728,17 @@ static int s_video_stall[VIDEO_MAX_CLIENTS];
  * queued in front of the newest: hundreds of ms behind. */
 static bool s_video_acks[VIDEO_MAX_CLIENTS];
 static int s_video_unacked[VIDEO_MAX_CLIENTS];
+/* Its acks stopped (the 500 ms timeout fired): treated as a viewer without
+ * acks, gated by its socket, until it can take a frame again. */
+static bool s_video_ack_lost[VIDEO_MAX_CLIENTS];
+/*
+ * How far an H.264 viewer that acks may run ahead. An H.264 frame needs the
+ * one before it, so a frame skipped costs a keyframe - the biggest frame
+ * there is - and over a VPN that keyframe kept the link full for the next
+ * frame too: a picture every 2.5 s, one per keyframe. MJPEG frames stand
+ * alone, so skipping one is free and its window stays at VIDEO_ACK_WINDOW.
+ */
+#define VIDEO_ACK_WINDOW_H264 6
 static int64_t s_video_sent_at[VIDEO_MAX_CLIENTS];
 /*
  * A subscriber on this socket wants the screen read as characters, not encoded
@@ -3785,6 +3796,7 @@ static void video_add_client(int fd, bool text)
             s_video_stall[i] = 0;
             s_video_acks[i] = false;
             s_video_unacked[i] = 0;
+            s_video_ack_lost[i] = false;
             s_text_mode[i] = text;
             s_text_need_full[i] = text;
             /* Bound sends to this viewer. esp-tls left the socket non-blocking, so a
@@ -3828,6 +3840,7 @@ static void video_drop_client_locked(int index)
     s_video_stall[index] = 0;
     s_video_acks[index] = false;
     s_video_unacked[index] = 0;
+    s_video_ack_lost[index] = false;
     s_text_mode[index] = false;
     s_text_need_full[index] = false;
     if (was_text) {
@@ -4109,16 +4122,10 @@ static void text_push(httpd_handle_t server)
  * wrapped in an async request handler - doing so leaves the handshake
  * unfinished and no frame ever reaches the client.
  */
-/* Ask for an IDR to repair a broken reference chain, at most every 300 ms:
-   IDRs are the biggest frames and would feed the overload they repair. */
+/* Repair IDRs share one 300 ms limit with the WebRTC sender. */
 static void video_request_repair_idr(void)
 {
-    static int64_t s_last_us;
-    const int64_t now_us = esp_timer_get_time();
-    if (now_us - s_last_us > 300000) {
-        s_last_us = now_us;
-        video_frame_request_keyframe();
-    }
+    video_frame_request_repair_keyframe();
 }
 
 static void video_pump_task(void *arg)
@@ -4239,11 +4246,14 @@ static void video_pump_task(void *arg)
             if (s_video_need_key[i] && !keyframe) {
                 continue; /* still waiting for its first decodable frame */
             }
-            if (s_video_acks[i] && s_video_unacked[i] >= VIDEO_ACK_WINDOW &&
+            const int window =
+                f_payload == VIDEO_PAYLOAD_H264 ? VIDEO_ACK_WINDOW_H264 : VIDEO_ACK_WINDOW;
+            if (s_video_acks[i] && s_video_unacked[i] >= window &&
                 esp_timer_get_time() - s_video_sent_at[i] > 500000) {
                 s_video_unacked[i] = 0; /* an ack went missing: do not wait forever */
+                s_video_ack_lost[i] = true;
             }
-            if (s_video_acks[i] && s_video_unacked[i] >= VIDEO_ACK_WINDOW) {
+            if (s_video_acks[i] && s_video_unacked[i] >= window) {
                 /* Still showing what it has: the newest frame goes next time,
                  * rather than this one waiting in a buffer. */
                 if (f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
@@ -4262,11 +4272,19 @@ static void video_pump_task(void *arg)
              * it has been stuck too long it is dropped so it stops holding up the
              * pump (and lets the encoder idle if it was the last viewer).
              */
+            /*
+             * A viewer that acks needs no such check: its acks are the flow
+             * control, and the window above bounds what is on the way. The
+             * socket check would get in its way - lwIP calls a socket writable
+             * only with half its send buffer free, which a keyframe on a link
+             * a little slower than a LAN does not leave by the next frame.
+             */
             fd_set wfds;
             FD_ZERO(&wfds);
             FD_SET(fd, &wfds);
             struct timeval tv0 = {0, 0};
-            if (select(fd + 1, NULL, &wfds, NULL, &tv0) <= 0 || !FD_ISSET(fd, &wfds)) {
+            if ((!s_video_acks[i] || s_video_ack_lost[i]) &&
+                (select(fd + 1, NULL, &wfds, NULL, &tv0) <= 0 || !FD_ISSET(fd, &wfds))) {
                 capture_link_miss();
                 if (++s_video_stall[i] >= VIDEO_STALL_DROP_FRAMES) {
                     video_drop_client_locked(i);
@@ -4280,6 +4298,7 @@ static void video_pump_task(void *arg)
                 continue;
             }
             s_video_stall[i] = 0;
+            s_video_ack_lost[i] = false;
             s_video_need_key[i] = false; /* decodable frame (a keyframe if it was waiting) */
             if (s_video_acks[i]) {
                 s_video_unacked[i]++;
@@ -5012,6 +5031,11 @@ httpd_handle_t http_server_start(void)
     const httpd_uri_t *probe_uris = pinprobe_api_routes(&n_probe);
     for (size_t i = 0; i < n_probe; i++) {
         register_route(h, &probe_uris[i]);
+    }
+    size_t n_webrtc = 0;
+    const httpd_uri_t *webrtc_uris = webrtc_api_routes(&n_webrtc);
+    for (size_t i = 0; i < n_webrtc; i++) {
+        register_route(h, &webrtc_uris[i]);
     }
     size_t n_serial = 0;
     const httpd_uri_t *serial_uris = serial_api_routes(&n_serial);

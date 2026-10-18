@@ -7,6 +7,42 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-10-18
+
+### Added
+- **H.264 over WebRTC.** The console now takes the H.264 picture over
+  WebRTC (UDP, DTLS-SRTP) when it can, and over the WebSocket when it
+  cannot. On UDP a lost packet costs one frame, so a bad Wi-Fi or mobile link
+  no longer stalls the picture for a second or two behind it. Keys, the mouse
+  and everything else stay on the WebSocket. Both kinds of viewer can watch
+  at once. Settings -> Video -> Allow WebRTC turns it off; the Video readout
+  says which way the picture comes. The device uses no STUN or TURN server:
+  it lists its own addresses, Tailscale included, and the browser picks one.
+  Tested over Tailscale on a phone on mobile data: 22 fps at 1080p.
+  Chrome is asked to show each frame at once, without its smoothing buffer
+  (the playout-delay RTP extension, min = max = 0). Mouse to picture over
+  Tailscale on mobile data went from 315 to 186 ms.
+- **Video readout: a copy button and link figures.** The Video popup copies
+  its figures as text. Over WebRTC it shows the browser's buffer, lost
+  packets and the round trip; on any transport, the input channel's round
+  trip.
+
+### Fixed
+- **On-screen keyboard: letters ignored Shift.** The letters were always
+  shown as capitals. They now show as they would type: lower case, capitals
+  with Shift, and the other way round while the target's Caps Lock is on.
+- **WebSocket video over Tailscale: a picture every 2.5 s.** After each
+  keyframe the device skipped the next frame, because lwIP calls a socket
+  writable only with half its send buffer free, and over a VPN the keyframe
+  had not drained by then. A skipped H.264 frame costs a new keyframe, so it
+  went on: one picture per keyframe. A viewer that acks frames (the console,
+  the terminal) is now paced by its acks alone, and an H.264 one may be six
+  frames ahead instead of two. Over Tailscale: 23 fps, the longest gap 0.15 s.
+- **Tailscale through a relay was slow.** The relay (DERP) connection had
+  Nagle on and sent each packet as two TLS records, and its queue held 16
+  packets, so most of a keyframe was dropped. Nagle is off, a packet is one
+  record, and the queue holds 64.
+
 ## [0.65.0] - 2026-10-14
 
 ### Added

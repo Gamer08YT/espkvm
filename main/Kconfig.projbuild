@@ -13,6 +13,16 @@ menu "ESP-KVM"
                 Availability is probed at boot (chip revision, encoder open) and
                 falls back to MJPEG when the hardware encoder cannot be used.
 
+        config KVM_ENABLE_WEBRTC
+            bool "H.264 over WebRTC"
+            default y
+            depends on KVM_ENABLE_H264
+            help
+                Send the H.264 stream to the browser over WebRTC (DTLS-SRTP on
+                UDP) as well as over the WebSocket. A lost packet then costs one
+                frame instead of stalling the stream behind it. Needs
+                MBEDTLS_SSL_PROTO_DTLS and MBEDTLS_SSL_DTLS_SRTP.
+
         config KVM_ENABLE_MSC
             bool "Virtual media (USB mass storage from microSD)"
             default y

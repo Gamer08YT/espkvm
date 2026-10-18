@@ -96,6 +96,10 @@ CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
 # get a 4 KB TLS buffer and took the WiFi link down with it.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# WebRTC (components/kvm_webrtc): DTLS 1.2 with the use_srtp extension.
+CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
+CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
+
 # microlink (native Tailscale) calls raw lwIP APIs (udp_*, netif_*, wireguardif_*)
 # from its own tasks. Under the default tcpip-thread model that races the TCP/IP
 # thread and corrupts lwIP (crash in tcp_output once the console serves TLS).

@@ -773,6 +773,47 @@ static bool intentional_write(httpd_req_t *req)
     return write_verdict(req) == WRITE_MEANT;
 }
 
+bool kvm_auth_session_of(httpd_req_t *req, uint8_t out[32])
+{
+    memset(out, 0, 32);
+    if (!kvm_auth_required()) {
+        return true;
+    }
+    char token[TOKEN_CHARS + 1] = {0};
+    if (!cookie_token(req, token, sizeof(token))) {
+        return false;
+    }
+    lock();
+    const session_t *s = session_find(token);
+    if (s) {
+        memcpy(out, s->hash, 32);
+    }
+    unlock();
+    return s != NULL;
+}
+
+bool kvm_auth_session_alive(const uint8_t hash[32])
+{
+    if (!kvm_auth_required()) {
+        return true;
+    }
+    static const uint8_t zero[32];
+    if (memcmp(hash, zero, 32) == 0) {
+        return false;
+    }
+    const int64_t now = esp_timer_get_time();
+    bool ok = false;
+    lock();
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].expires_us > now && equal_ct(s_sessions[i].hash, hash, 32)) {
+            ok = true;
+            break;
+        }
+    }
+    unlock();
+    return ok;
+}
+
 bool kvm_auth_check(httpd_req_t *req)
 {
     if (!intentional_write(req)) {

@@ -75,6 +75,15 @@ Browsers decode H.264 through WebCodecs, and they only offer it on a secure page
 Over plain HTTP no browser can play it, however new - the console says so when it
 cannot.
 
+H.264 goes to the browser one of two ways. WebRTC is the first choice: UDP, so
+a lost packet costs one frame and the browser asks for that packet again, where
+on the WebSocket's TCP every frame behind a lost packet waits for it. That
+matters on Wi-Fi and mobile links. The device's side is its own small stack:
+ICE-lite with the device's own addresses only (no STUN or TURN), DTLS-SRTP, and
+H.264 split into RTP packets small enough for a WireGuard tunnel. Only video goes
+this way; keys and the mouse stay on the WebSocket. When WebRTC cannot connect,
+the console uses the WebSocket, and both kinds of viewer can watch at once.
+
 **The gap between those two rows is the silicon.** Below revision 3.0 the CSI
 receiver cannot produce YUV420, and the H.264 encoder will not take RGB. So every
 frame detours through the pixel accelerator to change colour space, and that

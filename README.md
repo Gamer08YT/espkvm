@@ -269,6 +269,7 @@ components/
   kvm_sched/      scheduler: cron lines that fire actions on the device
   kvm_notify/     push notifications to Telegram and a webhook
   kvm_web/        HTTP/HTTPS server, REST API, WebSockets, TLS identity
+  kvm_webrtc/     H.264 to the browser over WebRTC (ICE-lite, DTLS-SRTP)
   kvm_net/        Ethernet, WiFi (station/AP + rescue hotspot, captive portal),
                   IPv6, mDNS, Wake-on-LAN, and the VPN clients (WireGuard,
                   or Tailscale through third_party/microlink)

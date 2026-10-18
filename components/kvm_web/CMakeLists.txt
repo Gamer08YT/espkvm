@@ -12,6 +12,7 @@ idf_component_register(
         "netlog_api.c"
         "url_fetch.c"
         "pinprobe_api.c"
+        "webrtc_api.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "."
     REQUIRES
@@ -42,6 +43,7 @@ idf_component_register(
         kvm_cec
         kvm_serial
         kvm_netlog
+        kvm_webrtc
         kvm_rtc
         app_update
         esp_app_format
