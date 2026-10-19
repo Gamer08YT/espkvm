@@ -33,6 +33,7 @@
 #include "psa/crypto.h"
 
 #include "capture.h"
+#include "kvm_audio.h"
 #include "kvm_caps.h"
 #include "rtp_h264.h"
 #include "sdp.h"
@@ -68,8 +69,13 @@ static const char *TAG = "webrtc";
 
 #define RX_STACK (10 * 1024)
 #define TX_STACK 4096
+#define AU_STACK 3072
 #define RX_PRIO 5
 #define TX_PRIO 5
+/* Level with the video; the Opus encoder feeding it sits below both. */
+#define AU_PRIO 5
+/* Opus packets waiting for the send task: 200 ms. */
+#define AU_DEPTH 10
 
 typedef enum {
     ST_FREE = 0,
@@ -116,7 +122,17 @@ typedef struct {
     uint16_t ring_seq[RING];
     uint16_t ring_len[RING];
 
-    uint32_t frames, pkts, resent, plis, drops;
+    /* The Opus stream, when the offer asked for one. Its own SSRC, sequence
+       and SRTP context (same keys, separate rollover counter). */
+    bool audio;
+    bool audio_on; /* the console turned the sound on */
+    uint8_t audio_pt;
+    uint32_t audio_ssrc;
+    uint16_t audio_seq;
+    uint32_t audio_ts0; /* random start, as RFC 3550 asks */
+    srtp_ctx_t atx;
+
+    uint32_t frames, pkts, resent, plis, drops, audio_pkts;
 } sess_t;
 
 static sess_t s_sess[MAX_SESSIONS];
@@ -221,13 +237,18 @@ static void session_free(sess_t *s)
     if (s->srtp_on) {
         srtp_free(&s->tx);
         srtp_free(&s->rx);
+        if (s->audio) {
+            srtp_free(&s->atx);
+        }
     }
     wr_hmac_free(s->ice);
     heap_caps_free(s->ring);
     heap_caps_free(s->pkt);
-    ESP_LOGI(TAG, "session %u closed: %u frames, %u packets, %u resent, %u PLIs, %u dropped",
+    ESP_LOGI(TAG,
+             "session %u closed: %u frames, %u packets, %u resent, %u PLIs, %u dropped, "
+             "%u audio packets",
              (unsigned)s->id, (unsigned)s->frames, (unsigned)s->pkts, (unsigned)s->resent,
-             (unsigned)s->plis, (unsigned)s->drops);
+             (unsigned)s->plis, (unsigned)s->drops, (unsigned)s->audio_pkts);
     memset(s, 0, sizeof(*s));
     video_frame_viewer_leave();
 }
@@ -332,13 +353,17 @@ static void dtls_done(sess_t *s)
     /* The device is the DTLS server: it sends with the server's keys. */
     const int r1 = srtp_init(&s->tx, sk, ss);
     const int r2 = srtp_init(&s->rx, ck, cs);
+    const int r3 = s->audio ? srtp_init(&s->atx, sk, ss) : 0;
     memset(km, 0, sizeof(km));
-    if (r1 || r2) {
+    if (r1 || r2 || r3) {
         if (!r1) {
             srtp_free(&s->tx);
         }
         if (!r2) {
             srtp_free(&s->rx);
+        }
+        if (s->audio && !r3) {
+            srtp_free(&s->atx);
         }
         session_kill(s, "SRTP setup failed");
         return;
@@ -399,20 +424,29 @@ static void on_rtcp(sess_t *s, const uint8_t *p, size_t len)
             return;
         }
         const uint8_t *b = p + off;
-        if (pt == 201 && plen >= 8 + 24 && (b[0] & 0x1f) >= 1) {
+        if (pt == 201) {
             /*
              * Receiver report, about once a second: the share of packets lost
              * since the last one, out of 256. The encoder steps its bitrate
              * down at two misses in a second, so a link losing 5% or more
              * counts twice and cuts it on its own; 2% counts once and cuts it
-             * together with any other sign of a slow link.
+             * together with any other sign of a slow link. Only the video's
+             * block counts; the audio is too small to say much.
              */
-            const uint8_t lost = b[12];
-            if (lost >= 13) {
-                capture_link_miss();
-                capture_link_miss();
-            } else if (lost >= 5) {
-                capture_link_miss();
+            for (size_t r = 0; r < fmt && 8 + 24 * (r + 1) <= plen; r++) {
+                const uint8_t *rb = b + 8 + 24 * r;
+                const uint32_t ssrc = (uint32_t)rb[0] << 24 | (uint32_t)rb[1] << 16 |
+                                      (uint32_t)rb[2] << 8 | rb[3];
+                if (ssrc != s->rtp.ssrc) {
+                    continue;
+                }
+                const uint8_t lost = rb[4];
+                if (lost >= 13) {
+                    capture_link_miss();
+                    capture_link_miss();
+                } else if (lost >= 5) {
+                    capture_link_miss();
+                }
             }
         } else if (pt == 205 && fmt == 1) {
             /* Generic NACK: a lost packet and a bitmap of the 16 after it. */
@@ -681,26 +715,33 @@ static void tx_task(void *arg)
             video_frame_release(&f);
             continue;
         }
-        /* Copied out so the encoder is not held up by a slow link; room for the
-           few bytes the SPS grows by. */
-        if (frame_cap < f.len + 16) {
-            uint8_t *grown = heap_caps_realloc(frame, f.len + 16, MALLOC_CAP_SPIRAM);
-            if (!grown) {
-                video_frame_release(&f);
-                continue;
+        /*
+         * Held until it is sent. The encoder then has no free slot and waits,
+         * so a slow link lowers the frame rate instead of skipping frames: a
+         * skipped delta costs a keyframe, which takes longer still to send, and
+         * the next one is skipped too. Only a keyframe is copied, for the SPS
+         * patch; room for the few bytes the SPS grows by.
+         */
+        const uint8_t *au = f.data;
+        size_t len = f.len;
+        if (f.keyframe) {
+            if (frame_cap < f.len + 16) {
+                uint8_t *grown = heap_caps_realloc(frame, f.len + 16, MALLOC_CAP_SPIRAM);
+                if (grown) {
+                    frame = grown;
+                    frame_cap = f.len + 16;
+                }
             }
-            frame = grown;
-            frame_cap = f.len + 16;
-        }
-        size_t len = f.keyframe ? sps_patch_au(f.data, f.len, frame, frame_cap) : 0;
-        if (!len) {
-            memcpy(frame, f.data, f.len);
-            len = f.len;
+            const size_t patched =
+                frame_cap >= f.len + 16 ? sps_patch_au(f.data, f.len, frame, frame_cap) : 0;
+            if (patched) {
+                au = frame;
+                len = patched;
+            }
         }
         const bool key = f.keyframe;
         /* 90 kHz from when the picture landed, so the browser paces it right. */
         const uint32_t ts = (uint32_t)((f.src_us ? f.src_us : f.at_us) * 9 / 100);
-        video_frame_release(&f);
 
         bool repair = false;
         const int64_t now = esp_timer_get_time();
@@ -721,7 +762,7 @@ static void tx_task(void *arg)
                 }
                 continue;
             }
-            if (rtp_h264_send(&s->rtp, frame, len, ts, s->pkt, emit, s) < 0) {
+            if (rtp_h264_send(&s->rtp, au, len, ts, s->pkt, emit, s) < 0) {
                 s->drops++;
                 s->need_key = true;
                 s->key_asked_us = now;
@@ -733,9 +774,80 @@ static void tx_task(void *arg)
             s->frames++;
         }
         unlock();
+        video_frame_release(&f);
         if (repair) {
             video_frame_request_repair_keyframe();
         }
+    }
+}
+
+/* ---- the audio send task ------------------------------------------------- */
+
+static bool any_audio(void)
+{
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sess[i].st == ST_MEDIA && s_sess[i].audio && s_sess[i].audio_on) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* One Opus packet per RTP packet (RFC 7587); no retransmission, a lost 20 ms
+   is better skipped than played late. */
+static void au_task(void *arg)
+{
+    (void)arg;
+    kvm_opus_packet_t *in = heap_caps_malloc(sizeof(*in), MALLOC_CAP_SPIRAM);
+    uint8_t *pkt = heap_caps_malloc(RTP_HDR_LEN + KVM_OPUS_MAX + SRTP_TAG_LEN, MALLOC_CAP_SPIRAM);
+    const size_t cap = RTP_HDR_LEN + KVM_OPUS_MAX + SRTP_TAG_LEN;
+    kvm_opus_reader_t *r = NULL;
+    for (;;) {
+        lock();
+        const bool busy = any_audio();
+        unlock();
+        if (!busy || !in || !pkt) {
+            kvm_opus_close(r);
+            r = NULL;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+        if (!r && kvm_opus_open(AU_DEPTH, &r) != ESP_OK) {
+            r = NULL;
+            vTaskDelay(pdMS_TO_TICKS(1000)); /* audio is off */
+            continue;
+        }
+        if (kvm_opus_read(r, in, 100) != ESP_OK) {
+            continue;
+        }
+        lock();
+        for (int i = 0; i < MAX_SESSIONS; i++) {
+            sess_t *s = &s_sess[i];
+            if (s->st != ST_MEDIA || !s->audio || !s->audio_on) {
+                continue;
+            }
+            const uint32_t ts = s->audio_ts0 + in->ts;
+            pkt[0] = 0x80;
+            pkt[1] = (uint8_t)((in->resync ? 0x80 : 0) | s->audio_pt);
+            pkt[2] = (uint8_t)(s->audio_seq >> 8);
+            pkt[3] = (uint8_t)s->audio_seq;
+            pkt[4] = (uint8_t)(ts >> 24);
+            pkt[5] = (uint8_t)(ts >> 16);
+            pkt[6] = (uint8_t)(ts >> 8);
+            pkt[7] = (uint8_t)ts;
+            pkt[8] = (uint8_t)(s->audio_ssrc >> 24);
+            pkt[9] = (uint8_t)(s->audio_ssrc >> 16);
+            pkt[10] = (uint8_t)(s->audio_ssrc >> 8);
+            pkt[11] = (uint8_t)s->audio_ssrc;
+            memcpy(pkt + RTP_HDR_LEN, in->data, in->len);
+            s->audio_seq++;
+            const int n = srtp_protect(&s->atx, pkt, RTP_HDR_LEN + in->len, cap);
+            if (n > 0 && sendto(s_sock, pkt, (size_t)n, 0, (const struct sockaddr *)&s->peer,
+                                sizeof(s->peer)) == n) {
+                s->audio_pkts++;
+            }
+        }
+        unlock();
     }
 }
 
@@ -768,6 +880,8 @@ esp_err_t kvm_webrtc_init(kvm_webrtc_owner_alive_fn alive)
     if (xTaskCreateWithCaps(rx_task, "webrtc_rx", RX_STACK, NULL, RX_PRIO, NULL,
                             MALLOC_CAP_SPIRAM) != pdPASS ||
         xTaskCreateWithCaps(tx_task, "webrtc_tx", TX_STACK, NULL, TX_PRIO, NULL,
+                            MALLOC_CAP_SPIRAM) != pdPASS ||
+        xTaskCreateWithCaps(au_task, "webrtc_au", AU_STACK, NULL, AU_PRIO, NULL,
                             MALLOC_CAP_SPIRAM) != pdPASS) {
         kvm_cap_report(KVM_CAP_WEBRTC, false, "could not start its tasks");
         return ESP_ERR_NO_MEM;
@@ -874,7 +988,8 @@ esp_err_t kvm_webrtc_offer(const char *offer, const uint8_t owner[32], char **an
         free(o);
         fail(status, 400, err, err_len,
              "the offer has no H.264 video this device can send (packetization-mode 1, "
-             "Baseline), or lacks ICE credentials or a SHA-256 fingerprint");
+             "Baseline), audio other than Opus, or lacks ICE credentials or a SHA-256 "
+             "fingerprint");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -887,7 +1002,9 @@ esp_err_t kvm_webrtc_offer(const char *offer, const uint8_t owner[32], char **an
     /* Built outside the lock: the slot is claimed (ST_ICE) but has no ufrag
        yet, so no packet can match it. */
     sess_t n = {0};
-    n.pkt = heap_caps_malloc(PKT_CAP, MALLOC_CAP_SPIRAM);
+    /* Internal RAM: the AES and SHA engines read it by DMA, and from PSRAM
+       each packet first went through a bounce buffer. */
+    n.pkt = heap_caps_malloc(PKT_CAP, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     n.ring = heap_caps_calloc(RING, PKT_CAP, MALLOC_CAP_SPIRAM);
     random_token(n.ufrag, sizeof(n.ufrag) - 1);
     random_token(n.pwd, sizeof(n.pwd) - 1);
@@ -912,12 +1029,20 @@ esp_err_t kvm_webrtc_offer(const char *offer, const uint8_t owner[32], char **an
     n.rtp.pt = (uint8_t)o->pt;
     n.rtp.max_payload = RTP_PAYLOAD;
     n.rtp.playout_ext = (uint8_t)o->playout_ext;
+    if (o->has_audio) {
+        n.audio = true;
+        n.audio_pt = (uint8_t)o->audio_pt;
+        n.audio_ssrc = esp_random();
+        n.audio_seq = (uint16_t)esp_random();
+        n.audio_ts0 = esp_random();
+    }
     n.created_us = n.seen_us = n.owner_checked_us = esp_timer_get_time();
 
     sdp_candidate_t cands[6];
     const int cc = candidates(cands, 6);
     const sdp_answer_params_t p = {.ufrag = n.ufrag, .pwd = n.pwd,
                                    .fingerprint = s_cert.fingerprint, .ssrc = n.rtp.ssrc,
+                                   .audio_ssrc = n.audio_ssrc,
                                    .cands = cands, .cand_count = cc};
     const int alen = sdp_write_answer(o, &p, ans, 4096);
     free(o);
@@ -939,8 +1064,8 @@ esp_err_t kvm_webrtc_offer(const char *offer, const uint8_t owner[32], char **an
     n.st = ST_ICE;
     *s = n;
     unlock();
-    ESP_LOGI(TAG, "session %u: answered, %d candidate(s) on UDP %u", (unsigned)n.id, cc,
-             (unsigned)s_port);
+    ESP_LOGI(TAG, "session %u: answered, %d candidate(s) on UDP %u%s", (unsigned)n.id, cc,
+             (unsigned)s_port, n.audio ? ", with audio" : "");
     *id = n.id;
     *answer = ans;
     *status = 200;
@@ -956,6 +1081,20 @@ void kvm_webrtc_close(uint32_t id)
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (s_sess[i].id == id && s_sess[i].st != ST_FREE) {
             session_kill(&s_sess[i], "the console closed it");
+        }
+    }
+    unlock();
+}
+
+void kvm_webrtc_sound(uint32_t id, bool on)
+{
+    if (!s_mu) {
+        return;
+    }
+    lock();
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sess[i].id == id && s_sess[i].st != ST_FREE && s_sess[i].audio) {
+            s_sess[i].audio_on = on;
         }
     }
     unlock();

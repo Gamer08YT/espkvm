@@ -78,13 +78,13 @@ static esp_err_t send_record_status(httpd_req_t *req)
                            "{\"on\":%s,\"file\":\"%s\",\"seconds\":%u,\"bytes\":%llu,\"frames\":%u,"
                            "\"dropped\":%u,\"stopped\":\"%s\",\"event\":%s,\"dashcam\":%s,"
                            "\"prerollSeconds\":%u,\"timelapse\":%u,\"clipSecondsLeft\":%u,"
-                           "\"clipsConverting\":%u,\"lastClip\":\"%s\"}",
+                           "\"clipsConverting\":%u,\"lastClip\":\"%s\",\"audio\":%s}",
                            rec.recording ? "true" : "false", rec.file, (unsigned)rec.seconds,
                            (unsigned long long)rec.bytes, (unsigned)rec.frames,
                            (unsigned)rec.dropped, rec.stopped, rec.event ? "true" : "false",
                            rec.dashcam ? "true" : "false", (unsigned)rec.preroll_seconds,
                            (unsigned)rec.timelapse_every, (unsigned)rec.clip_seconds_left,
-                           (unsigned)rec.clips_converting, rec.last_clip);
+                           (unsigned)rec.clips_converting, rec.last_clip, rec.audio ? "true" : "false");
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "status too long");
     }

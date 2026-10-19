@@ -39,7 +39,6 @@ and use [Discussions](https://github.com/espkvm/espkvm/discussions) for ideas.
 
 ## Planned
 
-- **HDMI audio** - capture the I2S audio from the bridge and stream it to the browser. The C790 brings it out on a connector of its own, so it costs four wires to the ESP32-P4 and the P4 receives as the slave
 - **More supported boards**
 - **Install your own EDID** - the built-in profiles cover the common cases; this takes a binary from a monitor that works, for the target that only likes its own
 

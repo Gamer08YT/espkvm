@@ -40,11 +40,11 @@ menu "ESP-KVM"
 
         config KVM_ENABLE_AUDIO
             bool "HDMI audio capture (I2S)"
-            default n
+            default y
             help
-                Capture the I2S audio the TC358743 extracts from HDMI and stream
-                it to the browser. Requires BCLK/LRCK/DATA wired from the capture
-                board to the ESP32-P4.
+                Capture the I2S audio the capture bridge takes out of HDMI. Off
+                until switched on in settings with three pins picked, so it is
+                safe to build into every board.
 
         config KVM_ENABLE_DISPLAY
             bool "Status display (I2C OLED / round SPI LCD)"

@@ -1,0 +1,11 @@
+dependencies:
+  # Opus for the browser and AAC for recordings. Espressif's licence: free to
+  # use, for Espressif chips only. 2.6 adds assembly for a rev 3 P4 and
+  # refuses to build for an older one, which keeps 2.5.
+  espressif/esp_audio_codec:
+    version: "~2.5.0"
+    matches:
+      - if: "$CONFIG{ESP32P4_REV_MIN_FULL} >= 300"
+        version: "~2.6.2"
+      - if: "$CONFIG{ESP32P4_REV_MIN_FULL} < 300"
+        version: "~2.5.0"

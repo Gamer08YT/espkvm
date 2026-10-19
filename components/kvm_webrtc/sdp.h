@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Reading a browser's SDP offer and writing the answer, for exactly one case:
- * the browser receives one H.264 video stream from the device. Anything else
- * in the offer is declined.
+ * the browser receives one H.264 video stream from the device, and optionally
+ * one Opus audio stream bundled with it. Any other offer is refused.
  */
 #pragma once
 
@@ -36,7 +36,13 @@ typedef struct {
     /* The id the offer gave the playout-delay header extension, 1..14, or 0
        when it did not offer it. */
     int playout_ext;
-    /* m-lines in the offer; only the first video one is accepted. */
+    /* The Opus m-line, when the offer has one: its mid and payload type, and
+       whether it came before the video (the answer keeps the offer's order). */
+    bool has_audio;
+    bool audio_first;
+    char audio_mid[SDP_MID_MAX];
+    int audio_pt;
+    /* m-lines in the offer: one video, at most one audio. */
     int m_count;
 } sdp_offer_t;
 
@@ -45,13 +51,15 @@ typedef struct {
     uint16_t port;
 } sdp_candidate_t;
 
-/** 0 when the offer has an H.264 video stream this device can send. */
+/** 0 when the offer has an H.264 video stream this device can send, and at
+ * most one Opus audio stream besides. */
 int sdp_parse_offer(const char *sdp, sdp_offer_t *out);
 
 typedef struct {
     const char *ufrag, *pwd;
     const uint8_t *fingerprint; /* ours, SHA-256 */
     uint32_t ssrc;
+    uint32_t audio_ssrc; /* used when the offer has audio */
     const sdp_candidate_t *cands;
     int cand_count;
 } sdp_answer_params_t;

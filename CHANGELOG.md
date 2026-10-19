@@ -7,12 +7,44 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-10-19
+
+### Added
+- **HDMI audio.** On boards with a TC358743 (the C790 and the like) the
+  console plays the target's sound. Wire the bridge's three I2S lines and a
+  ground to free pins and pick them in Settings -> Audio. The speaker button
+  under the picture turns it on. Over WebRTC it goes in the same connection
+  as the picture; with the picture on the WebSocket it comes on a
+  socket of its own. The device encodes nothing while nobody listens. Based
+  on Zachary Leahan's audio work in his fork. The M5Stack modules with an
+  LT6911D bring no sound out; Settings says so instead of playing silence.
+- **Sound in recordings.** A recording and a dashcam clip get the sound as
+  mono AAC next to the picture. The console's player plays it.
+- Media keys: volume, mute, previous, play/pause, next and screen
+  brightness, on a new Fn layout of the on-screen keyboard with F1-F12, Esc,
+  Enter and the arrows (handy in a BIOS). The same keys on a
+  real keyboard reach the target too, when the operator's OS lets them
+  through. Brightness works on the target's own screen (a laptop), not on a
+  monitor on HDMI.
+- Pinch to zoom the picture on a phone or tablet. Two fingers move the
+  zoomed picture; the "2.0x" chip in the corner shows all of it again.
+- `GET /api/v1/audio` for the receiver's state, and
+  `GET /api/v1/audio/clip.wav?s=N` for the next few seconds as a WAV file.
+
 ### Changed
 - The Tailscale admin console now shows the device as "Linux ESP-KVM",
   and its version as the firmware version with the microlink version in
   brackets.
 
 ### Fixed
+- Over WebRTC on a slow link (Tailscale, a phone) the picture kept freezing
+  for a moment. A frame that took long to send let the encoder get ahead, the
+  next frame was skipped, and the skip asked for a keyframe, which took even
+  longer to send. Now the encoder waits for the send, so a slow link costs
+  frame rate instead.
+- Tailscale took 48 KB of the P4's internal RAM, mostly the stacks of its
+  tasks. Three of them now keep their stacks in PSRAM, which gives back
+  28 KB.
 - After a keyframe's SPS was rewritten, part of it could stay in the CPU
   cache and later overwrite a newer frame in the same buffer. It is now
   written back at once. Found by Zachary Leahan.

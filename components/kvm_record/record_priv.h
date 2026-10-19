@@ -41,6 +41,13 @@ typedef struct {
 /** Keep the frame reader running, and the last minutes in memory, while on. */
 void record_set_dashcam(bool on);
 
+/**
+ * Keep the sound's encoder running for the dashcam in memory while audio is
+ * on, so a clip's past has sound too. Called once a second: audio can be
+ * switched on or off at any time.
+ */
+void record_dashcam_audio(void);
+
 /** How many seconds of the past the ring holds now. */
 uint32_t record_preroll_seconds(void);
 

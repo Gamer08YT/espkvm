@@ -117,6 +117,40 @@ static void test_srtp(void)
         free(t);
     }
     srtp_free(&c);
+
+    /* Two senders, each counting its own index from 0: both are taken, and a
+       replay is still a replay for each of them. */
+    {
+        srtp_ctx_t a, b, in;
+        uint8_t pa[3][64], pb[3][64];
+        int la[3], lb[3];
+        srtp_init(&a, V_MK, V_MS);
+        srtp_init(&b, V_MK, V_MS);
+        srtp_init(&in, V_MK, V_MS);
+        for (int i = 0; i < 3; i++) {
+            memcpy(pa[i], V_RTCP, sizeof(V_RTCP));
+            la[i] = srtcp_protect(&a, pa[i], sizeof(V_RTCP), sizeof(pa[i]));
+            memcpy(pb[i], V_RTCP, sizeof(V_RTCP));
+            pb[i][7] ^= 0x55; /* another SSRC */
+            lb[i] = srtcp_protect(&b, pb[i], sizeof(V_RTCP), sizeof(pb[i]));
+        }
+        uint8_t t[64];
+        for (int i = 0; i < 3; i++) {
+            memcpy(t, pa[i], (size_t)la[i]);
+            CHECK(srtcp_unprotect(&in, t, (size_t)la[i]) == (int)sizeof(V_RTCP));
+        }
+        for (int i = 0; i < 3; i++) {
+            memcpy(t, pb[i], (size_t)lb[i]);
+            CHECK(srtcp_unprotect(&in, t, (size_t)lb[i]) == (int)sizeof(V_RTCP));
+        }
+        memcpy(t, pb[1], (size_t)lb[1]);
+        CHECK(srtcp_unprotect(&in, t, (size_t)lb[1]) == -1);
+        memcpy(t, pa[2], (size_t)la[2]);
+        CHECK(srtcp_unprotect(&in, t, (size_t)la[2]) == -1);
+        srtp_free(&a);
+        srtp_free(&b);
+        srtp_free(&in);
+    }
 }
 
 static void test_stun(void)
@@ -350,10 +384,43 @@ static void test_sdp(void)
     CHECK(sdp_parse_offer(alt, &o) == 0 && o.pt == 102 && o.fb_pli && o.fb_remb && o.fb_fir);
     free(alt);
 
-    /* Two m-lines, no fingerprint, a bad mid: refused. */
+    /* Audio that is not Opus, no fingerprint, a bad mid: refused. */
     char two[4096];
     snprintf(two, sizeof(two), "%sm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:1\r\n", OFFER);
     CHECK(sdp_parse_offer(two, &o) == -1);
+
+    /* Opus after the video: taken, answered in the same order and bundled. */
+    snprintf(two, sizeof(two),
+             "%sm=audio 9 UDP/TLS/RTP/SAVPF 111 0\r\na=mid:1\r\na=rtpmap:0 PCMU/8000\r\n"
+             "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n",
+             OFFER);
+    CHECK(sdp_parse_offer(two, &o) == 0 && o.has_audio && !o.audio_first && o.audio_pt == 111 &&
+          strcmp(o.audio_mid, "1") == 0);
+    {
+        sdp_answer_params_t pa = p;
+        pa.audio_ssrc = 0x01020304;
+        char big[4096];
+        CHECK(sdp_write_answer(&o, &pa, big, sizeof(big)) > 0);
+        const char *mv = strstr(big, "m=video "), *ma = strstr(big, "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n");
+        CHECK(mv && ma && mv < ma);
+        CHECK(strstr(big, "a=rtpmap:111 opus/48000/2\r\n") != NULL);
+        CHECK(strstr(big, "a=ssrc:16909060 cname:espkvm\r\n") != NULL);
+        CHECK(strstr(big, "a=group:BUNDLE 0 1\r\n") != NULL);
+        CHECK(sdp_write_answer(&o, &pa, big, 900) == -1);
+    }
+    /* A third m-line, or audio sharing the video's mid: refused. */
+    char three[4200];
+    snprintf(three, sizeof(three), "%sm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n", two);
+    CHECK(sdp_parse_offer(three, &o) == -1);
+    char *same = strdup(two);
+    memcpy(strstr(same, "a=mid:1"), "a=mid:0", 7);
+    CHECK(sdp_parse_offer(same, &o) == -1);
+    free(same);
+    for (size_t n = 0; n < strlen(two); n++) {
+        char *t = strndup(two, n);
+        (void)sdp_parse_offer(t, &o);
+        free(t);
+    }
     char *nofp = strdup(OFFER);
     memcpy(strstr(nofp, "a=fingerprint"), "a=fingerprXnt", 13);
     CHECK(sdp_parse_offer(nofp, &o) == -1);

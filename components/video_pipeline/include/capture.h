@@ -33,6 +33,7 @@ typedef struct {
     uint8_t sys_status;    /**< raw TC358743 SYS_STATUS, for diagnostics */
     uint8_t input_hz;      /**< refresh rate the source sends, 0 when unknown */
     bool too_fast;         /**< the mode needs more than the CSI lanes carry */
+    uint32_t audio_hz;     /**< HDMI audio sample rate, 0 when none comes */
     /**
      * How long the picture has been one flat colour, in ms; 0 when it is not.
      *

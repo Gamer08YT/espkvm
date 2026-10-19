@@ -71,7 +71,7 @@ Useful for what it does today, and honest about the rest.
 |---|---|
 | Video: follows the target's resolution, MJPEG and H.264 | works; H.264 needs HTTPS |
 | Keyboard, mouse, media keys, pasting text in a layout | works |
-| From a phone or a tablet | works; touch trackpad and on-screen keyboard |
+| From a phone or a tablet | works; touch trackpad, pinch zoom and on-screen keyboard |
 | Several viewers, one in control | works |
 | Virtual media: boot the target from an image | works; from microSD or the device's flash |
 | Recording, screenshots, dashcam, timelapse | works; on a microSD card |
@@ -89,7 +89,7 @@ Useful for what it does today, and honest about the rest.
 | Home Assistant over MQTT | works; off by default |
 | Updates over the network, with rollback | works |
 | A small status display, a battery-backed clock | works; optional |
-| HDMI audio | not done |
+| HDMI audio, in the console and in recordings | new; on TC358743 boards, three wires to the P4 |
 
 Every row in detail: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md#what-works-in-detail).
 

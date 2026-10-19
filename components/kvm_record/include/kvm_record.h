@@ -44,6 +44,8 @@ typedef struct {
     uint32_t preroll_seconds;
     /** A timelapse keeps one frame every this many seconds; 0 for anything else. */
     uint32_t timelapse_every;
+    /** The recording has the target's sound. */
+    bool audio;
     /** While a clip is being saved: seconds of screen still to come. */
     uint32_t clip_seconds_left;
     /** Clips written but still being turned into MP4. */

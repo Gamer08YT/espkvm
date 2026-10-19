@@ -252,36 +252,45 @@ static const char *TAG = "tc358743";
 #define NO_PKT_LIMIT2 0x870e
 #define NO_GDB_LIMIT 0x9007
 
-#define FORCE_MUTE 0x8602
-#define AUTO_CMD0 0x8603
+/* Audio. Addresses and fields as in Linux's tc358743_regs.h; the ones here
+ * before pointed at other registers. Zachary Leahan found it (ca27f55). */
+#define AU_STATUS0 0x8523
+#define MASK_S_A_SAMPLE 0x01
+#define ANA_CTL 0x8545
+#define MASK_APPL_PCSX_NORMAL 0x30
+#define MASK_ANALOG_ON 0x01
+#define FORCE_MUTE 0x8600
+#define AUTO_CMD0 0x8602
 #define MASK_AUTO_MUTE7 0x80
 #define MASK_AUTO_MUTE6 0x40
 #define MASK_AUTO_MUTE5 0x20
 #define MASK_AUTO_MUTE4 0x10
 #define MASK_AUTO_MUTE1 0x02
 #define MASK_AUTO_MUTE0 0x01
-#define AUTO_CMD1 0x8604
+#define AUTO_CMD1 0x8603
 #define MASK_AUTO_MUTE9 0x02
-#define AUTO_CMD2 0x8605
+#define AUTO_CMD2 0x8604
 #define MASK_AUTO_PLAY3 0x08
 #define MASK_AUTO_PLAY2 0x04
 #define BUFINIT_START 0x8606
-#define SET_BUFINIT_START_MS(ms) ((ms) & 0xff)
+#define SET_BUFINIT_START_MS(ms) ((ms) / 100)
 #define FS_MUTE 0x8607
-#define FS_IMODE 0x8608
-#define MASK_NLPCM_SMODE 0x02
-#define MASK_FS_SMODE 0x01
-#define ACR_MODE 0x8609
-#define MASK_CTS_MODE 0x02
-#define ACR_MDF0 0x860a
-#define MASK_ACR_L2MDF_1976_PPM 0x20
-#define MASK_ACR_L1MDF_976_PPM 0x10
-#define ACR_MDF1 0x860b
+#define FS_IMODE 0x8620
+#define MASK_NLPCM_SMODE 0x20
+#define MASK_FS_SMODE 0x02
+#define FS_SET 0x8621
+#define MASK_FS 0x0f
+#define ACR_MODE 0x8640
+#define MASK_CTS_MODE 0x01
+#define ACR_MDF0 0x8641
+#define MASK_ACR_L2MDF_1976_PPM 0x60
+#define MASK_ACR_L1MDF_976_PPM 0x05
+#define ACR_MDF1 0x8642
 #define MASK_ACR_L3MDF_3906_PPM 0x07
-#define SDO_MODE1 0x860d
+#define SDO_MODE1 0x8652
 #define MASK_SDO_FMT_I2S 0x02
-#define DIV_MODE 0x8612
-#define SET_DIV_DLY_MS(ms) ((ms) & 0xff)
+#define DIV_MODE 0x8665
+#define SET_DIV_DLY_MS(ms) ((((ms) / 100) << 4) & 0xf0)
 
 struct tc358743 {
     i2c_master_dev_handle_t i2c;
@@ -291,6 +300,7 @@ struct tc358743 {
     tc358743_edid_profile_t edid_profile;
     bool i2c_ok; /* tracks I2C health so a wedged bus is logged once, not per-register */
     uint32_t i2c_fails; /* failed transfers, so a reading can tell it is not real */
+    bool analog_on; /* ANA_CTL set since HDMI mode was last seen */
 };
 
 /* Largest single register write: the 128-byte EDID block plus the 2-byte address. */
@@ -524,9 +534,23 @@ static void set_hdmi_phy(tc358743_t *d)
     wr8_and_or(d, PHY_EN, (uint8_t)~MASK_ENABLE_PHY, MASK_ENABLE_PHY);
 }
 
+/* FS_SET code to Hz, as in the HDMI channel status; 0 for codes it has no rate for. */
+static uint32_t audio_rate(uint8_t code)
+{
+    switch (code) {
+    case 0x0: return 44100;
+    case 0x2: return 48000;
+    case 0x3: return 32000;
+    case 0x8: return 88200;
+    case 0xa: return 96000;
+    case 0xc: return 176400;
+    case 0xe: return 192000;
+    default: return 0;
+    }
+}
+
 static void set_hdmi_audio(tc358743_t *d)
 {
-    (void)d;
     wr8(d, FORCE_MUTE, 0x00);
     wr8(d, AUTO_CMD0,
         MASK_AUTO_MUTE7 | MASK_AUTO_MUTE6 | MASK_AUTO_MUTE5 | MASK_AUTO_MUTE4 | MASK_AUTO_MUTE1 | MASK_AUTO_MUTE0);
@@ -562,6 +586,7 @@ static void initial_setup(tc358743_t *d)
     wr16_and_or(d, SYSCTL, (uint16_t) ~(MASK_IRRST | MASK_CECRST),
                 MASK_IRRST | (s_cec_on ? 0 : MASK_CECRST));
     reset_blocks(d, MASK_CTXRST | MASK_HDMIRST);
+    d->analog_on = false;
     sleep_mode(d, false);
 
     wr16(d, FIFOCTL, pdata->fifo_level);
@@ -926,6 +951,17 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
     out->ddc5v = (st & TC358743_SYS_DDC5V) != 0u;
     out->tmds = (st & TC358743_SYS_TMDS) != 0u;
     out->hdmi_mode = (st & TC358743_SYS_HDMI_MODE) != 0u;
+    /* ANA_CTL drops back in DVI mode and the audio PLL with it. Linux sets it
+     * again on the HDMI interrupt; this driver polls, so on the change. */
+    if (out->hdmi_mode && !d->analog_on) {
+        wr8(d, ANA_CTL, MASK_APPL_PCSX_NORMAL | MASK_ANALOG_ON);
+        d->analog_on = true;
+    } else if (!out->hdmi_mode) {
+        d->analog_on = false;
+    }
+    if (out->hdmi_mode && (rd8(d, AU_STATUS0) & MASK_S_A_SAMPLE)) {
+        out->audio_hz = audio_rate(rd8(d, FS_SET) & MASK_FS);
+    }
     out->sync = (st & TC358743_SYS_SYNC) != 0u;
     out->interlaced = (rd8(d, VI_STATUS1) & MASK_S_V_INTERLACE) != 0u;
     if (out->sync && out->hact >= 320u) {

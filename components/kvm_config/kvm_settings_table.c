@@ -766,10 +766,30 @@ static const kvm_setting_t s_settings[] = {
     /* ---- audio ---------------------------------------------------------- */
     {
         .key = "aud_enable", .section = "audio", .type = KVM_VT_BOOL,
-        .title = "Stream HDMI audio",
-        .help = "Only works once BCLK, LRCK and DATA are wired from the capture board "
-                "to the ESP32-P4.",
-        .def = 0, .requires_cap = KVM_CAP_AUDIO, .flags = KVM_SF_REBOOT,
+        .title = "HDMI audio",
+        .help = "The capture board sends the HDMI sound as I2S on three wires: bit clock "
+                "(BCLK or SCK), word clock (WS, LRCK or WFS) and data (SD or DATA). Wire them "
+                "to three free pins, plus ground, and pick those pins below. On the Geekworm "
+                "C790 they are on the J4 header.",
+        .def = 0, .requires_cap = -1,
+    },
+    {
+        .key = "aud_bclk", .section = "audio", .type = KVM_VT_INT,
+        .title = "BCLK pin (bit clock)",
+        .help = "-1 until you pick one.",
+        .min = -1, .max = 54, .def = -1, .requires_cap = -1, .flags = KVM_SF_PIN,
+    },
+    {
+        .key = "aud_ws", .section = "audio", .type = KVM_VT_INT,
+        .title = "WS pin (word clock)",
+        .help = "-1 until you pick one.",
+        .min = -1, .max = 54, .def = -1, .requires_cap = -1, .flags = KVM_SF_PIN,
+    },
+    {
+        .key = "aud_din", .section = "audio", .type = KVM_VT_INT,
+        .title = "DATA pin",
+        .help = "-1 until you pick one.",
+        .min = -1, .max = 54, .def = -1, .requires_cap = -1, .flags = KVM_SF_PIN,
     },
 
     /* ---- network -------------------------------------------------------- */
@@ -1374,6 +1394,7 @@ static const kvm_setting_t s_settings[] = {
 /* clang-format off */
 static const kvm_section_t s_sections[] = {
     {"video", "Video", "The picture, and what is recorded from it."},
+    {"audio", "Audio", "The target's sound, on three wires from the capture board."},
     {"input", "Input", "Keyboard and pointer, as the target sees them."},
     {"storage", "Virtual media", "The microSD card and what is offered to the target."},
     {"power", "Power", "ATX wiring and Wake-on-LAN."},

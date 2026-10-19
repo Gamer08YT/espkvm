@@ -13,4 +13,5 @@ idf_component_register(
         esp_timer
         kvm_config
         video_pipeline
+        kvm_audio
 )

@@ -48,6 +48,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "keylog.h"
+#include "kvm_audio.h"
 #include "kvm_settings.h"
 #include "kvm_storage.h"
 #include "record_priv.h"
@@ -130,6 +131,18 @@ static int64_t s_every_us;  /* 0 = an ordinary recording */
 static int64_t s_due_us;    /* the next keyframe at or after this goes in */
 static uint32_t s_tl_frame; /* frames written into this part */
 static char s_limit_why[64];
+/* The target's sound, when audio is on: the AAC frames up to a picture's time
+ * go in just before it. A timelapse has none. The dashcam in memory keeps the
+ * encoder running, and its past in the encoder's buffer, between clips.
+ * s_aac_mu guards opening and closing it. */
+#define DASHCAM_AUDIO_S 120
+static SemaphoreHandle_t s_aac_mu;
+static kvm_aac_t *s_aac;
+static kvm_aac_frame_t *s_aac_frame; /* read, not written yet when s_aac_held */
+static bool s_aac_held;
+static bool s_aac_dashcam;  /* opened for the dashcam, with its minutes of past */
+static bool s_writer_audio; /* the writer runs and closes the encoder when done */
+static bool s_rec_audio;    /* this recording has sound */
 
 /* The dashcam on the card: the writer is running for it, not for the operator. */
 #define SEG_DIR KVM_RECORD_DIR "/.dashcam"
@@ -1094,12 +1107,96 @@ static void close_file(void)
     }
 }
 
+/*
+ * The AAC frames that start up to @p until_us, at their times in this file;
+ * any from before its first picture are left out. Waits up to @p wait_ms for
+ * the encoder to get that far: where a file ends, its sound has to be in.
+ */
+static void write_audio(ts_mux_t *mux, int64_t until_us, uint32_t wait_ms)
+{
+    while (s_rec_audio) {
+        if (!s_aac_held) {
+            if (kvm_aac_read(s_aac, s_aac_frame, wait_ms) != ESP_OK) {
+                return;
+            }
+            s_aac_held = true;
+        }
+        if (s_aac_frame->start_us > until_us) {
+            return;
+        }
+        s_aac_held = false;
+        if (s_aac_frame->start_us >= s_part_t0_us) {
+            ts_mux_audio(mux, s_aac_frame->data, s_aac_frame->len,
+                         (uint64_t)(s_aac_frame->start_us - s_part_t0_us) * 9u / 100u);
+        }
+    }
+}
+
+/* Both under s_aac_mu. */
+static void open_audio(bool dashcam)
+{
+    if (kvm_aac_open(dashcam ? DASHCAM_AUDIO_S : 0, &s_aac) != ESP_OK) {
+        return;
+    }
+    s_aac_frame = heap_caps_malloc(sizeof(*s_aac_frame), MALLOC_CAP_SPIRAM);
+    if (!s_aac_frame) {
+        kvm_aac_close(s_aac);
+        s_aac = NULL;
+        return;
+    }
+    s_aac_dashcam = dashcam;
+}
+
+static void close_audio(void)
+{
+    if (s_aac && !s_aac_dashcam) {
+        ESP_LOGI(TAG, "sound: %u AAC frames lost", (unsigned)kvm_aac_dropped(s_aac));
+    }
+    kvm_aac_close(s_aac);
+    s_aac = NULL;
+    heap_caps_free(s_aac_frame);
+    s_aac_frame = NULL;
+    s_aac_held = false;
+    s_aac_dashcam = false;
+}
+
+/* The writer is done with the sound: keep the dashcam's encoder, close the rest. */
+static void writer_audio_done(void)
+{
+    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
+    s_writer_audio = false;
+    s_rec_audio = false;
+    if (!(s_dashcam && s_aac_dashcam)) {
+        close_audio();
+    }
+    xSemaphoreGive(s_aac_mu);
+}
+
+void record_dashcam_audio(void)
+{
+    if (!s_aac_mu) {
+        return;
+    }
+    kvm_audio_status_t a;
+    kvm_audio_status(&a);
+    const bool want = s_dashcam && a.enabled;
+    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
+    if (want && !s_aac) {
+        open_audio(true);
+    } else if (!want && s_aac && !s_writer_audio) {
+        close_audio();
+    }
+    xSemaphoreGive(s_aac_mu);
+}
+
 static void writer_task(void *arg)
 {
     (void)arg;
     ts_mux_t mux;
     ts_mux_init(&mux, on_packet, NULL);
+    mux.audio = s_rec_audio;
     int64_t t0_us = 0;
+    int64_t last_us = 0; /* the last picture written */
     int64_t stop_at_us = 0; /* frames after this are not ours; 0 until a stop */
     int64_t synced_us = esp_timer_get_time();
 
@@ -1163,9 +1260,11 @@ static void writer_task(void *arg)
                                        e.at_us >= s_event_end_us;
                 /* A new file on a keyframe, so each one plays on its own: when this
                  * one nears 4 GiB, or the split length the operator set. */
-                if (e.keyframe && e.at_us != s_part_t0_us &&
-                    (s_file_bytes >= PART_MAX_BYTES || clip_done ||
-                     (s_split_us && e.at_us - s_part_t0_us >= s_split_us))) {
+                const bool split = e.keyframe && e.at_us != s_part_t0_us &&
+                                   (s_file_bytes >= PART_MAX_BYTES || clip_done ||
+                                    (s_split_us && e.at_us - s_part_t0_us >= s_split_us));
+                write_audio(&mux, split ? e.at_us - 1 : e.at_us, split ? 500 : 0);
+                if (split) {
                     close_file();
                     if (s_background) {
                         seg_ended(e.at_us, clip_done);
@@ -1196,6 +1295,7 @@ static void writer_task(void *arg)
                         s_stop = true;
                     } else {
                         ts_mux_init(&mux, on_packet, NULL);
+                        mux.audio = s_rec_audio;
                         s_tl_frame = 0;
                         portENTER_CRITICAL(&s_mu);
                         snprintf(s_st.file, sizeof(s_st.file), "%s", rel);
@@ -1210,6 +1310,7 @@ static void writer_task(void *arg)
                 const uint64_t pts = s_every_us ? (uint64_t)s_tl_frame++ * (90000u / TIMELAPSE_FPS)
                                                 : (uint64_t)(e.at_us - s_part_t0_us) * 9u / 100u;
                 ts_mux_frame(&mux, s_frame, e.len, pts, e.keyframe);
+                last_us = e.at_us;
                 portENTER_CRITICAL(&s_mu);
                 s_st.frames++;
                 portEXIT_CRITICAL(&s_mu);
@@ -1232,6 +1333,10 @@ static void writer_task(void *arg)
         }
     }
 
+    if (s_file && !s_write_failed && last_us) {
+        write_audio(&mux, last_us, 500);
+    }
+    writer_audio_done();
     close_file();
     if (s_subs_on) {
         drain_key_events(INT64_MAX / 2);
@@ -1330,6 +1435,7 @@ void kvm_record_init(void)
         s_ring_mu = xSemaphoreCreateMutex();
         s_ring_ready = xSemaphoreCreateBinary();
         s_keylog_mu = xSemaphoreCreateMutex();
+        s_aac_mu = xSemaphoreCreateMutex();
     }
     kvm_storage_set_fs_leaving_cb(on_card_leaving);
     capture_set_memory_pressure_cb(on_memory_pressure);
@@ -1437,6 +1543,16 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
         return ESP_FAIL;
     }
 
+    /* Sound when audio is on and working; without it the recording goes on
+     * silent. A clip takes the dashcam's encoder with the past it holds. */
+    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
+    if (!every_s && !s_aac) {
+        open_audio(false);
+    }
+    s_rec_audio = !every_s && s_aac;
+    s_writer_audio = true;
+    xSemaphoreGive(s_aac_mu);
+
     const int64_t now = esp_timer_get_time();
     xSemaphoreTake(s_ring_mu, portMAX_DELAY);
     if (event_title) {
@@ -1526,6 +1642,7 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
         memset(&s_st, 0, sizeof(s_st));
         s_st.recording = true;
         s_st.timelapse_every = every_s;
+        s_st.audio = s_rec_audio;
         snprintf(s_st.file, sizeof(s_st.file), "%s", rel);
         s_started_us = now;
     }
@@ -1552,6 +1669,7 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
         s_file = NULL;
         heap_caps_free(s_chunk);
         s_chunk = NULL;
+        writer_audio_done();
         s_active = false;
         s_background = false;
         s_event = false;
@@ -1747,6 +1865,7 @@ void record_set_dashcam(bool on)
     }
     const bool release = !on && !s_active;
     xSemaphoreGive(s_ctl);
+    record_dashcam_audio();
     if (release) {
         /* Now, not when the feed next wakes: a codec switch may need the memory. */
         ring_free();

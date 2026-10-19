@@ -189,24 +189,37 @@ int srtcp_unprotect(srtp_ctx_t *c, uint8_t *pkt, size_t len)
     const uint32_t e_index = get32(pkt + body);
     const uint32_t index = e_index & 0x7fffffffu;
 
-    /* Replay: anything at or below the window, or already seen in it. */
-    if (c->in_seen) {
-        if (index > c->in_max) {
-            const uint32_t shift = index - c->in_max;
-            c->in_window = shift >= 64 ? 0 : c->in_window << shift;
-            c->in_window |= 1;
-            c->in_max = index;
+    /* Replay: anything at or below the sender's window, or already seen in
+       it. A third sender takes the second's place. */
+    const uint32_t ssrc = get32(pkt + 4);
+    int w = SRTCP_SENDERS - 1;
+    for (int i = 0; i < SRTCP_SENDERS; i++) {
+        if (!c->in[i].seen || c->in[i].ssrc == ssrc) {
+            w = i;
+            break;
+        }
+    }
+    if (c->in[w].seen && c->in[w].ssrc != ssrc) {
+        c->in[w].seen = false;
+    }
+    if (c->in[w].seen) {
+        if (index > c->in[w].max) {
+            const uint32_t shift = index - c->in[w].max;
+            c->in[w].window = shift >= 64 ? 0 : c->in[w].window << shift;
+            c->in[w].window |= 1;
+            c->in[w].max = index;
         } else {
-            const uint32_t back = c->in_max - index;
-            if (back >= 64 || (c->in_window >> back) & 1) {
+            const uint32_t back = c->in[w].max - index;
+            if (back >= 64 || (c->in[w].window >> back) & 1) {
                 return -1;
             }
-            c->in_window |= (uint64_t)1 << back;
+            c->in[w].window |= (uint64_t)1 << back;
         }
     } else {
-        c->in_seen = true;
-        c->in_max = index;
-        c->in_window = 1;
+        c->in[w].seen = true;
+        c->in[w].ssrc = ssrc;
+        c->in[w].max = index;
+        c->in[w].window = 1;
     }
 
     if (e_index & 0x80000000u) {

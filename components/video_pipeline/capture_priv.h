@@ -309,7 +309,7 @@ uint32_t capture_h264_estimated_fps(uint32_t w, uint32_t h);
 void capture_status_set_mode(uint32_t hres, uint32_t vres, bool interlaced);
 void capture_status_set_signal(bool present, uint8_t sys_status);
 /** Measured input refresh (0 unknown), and whether the mode is over the lane limit. */
-void capture_status_set_input(uint8_t hz, bool too_fast);
+void capture_status_set_input(uint8_t hz, bool too_fast, uint32_t audio_hz);
 void capture_status_add_frame(size_t bytes);
 /** A frame taken by the loop @p us after it landed. */
 void capture_status_add_wait(uint32_t us);

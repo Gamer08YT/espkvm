@@ -6,6 +6,7 @@
  *
  *   POST   /api/v1/video/webrtc        {"sdp": offer} -> {"id": N, "sdp": answer}
  *   DELETE /api/v1/video/webrtc?id=N   the console is done with session N
+ *   POST   /api/v1/video/webrtc/sound?id=N&on=1   sound in session N on (or 0: off)
  *
  * A session lives only as long as the sign-in that opened it.
  */
@@ -120,9 +121,28 @@ static esp_err_t webrtc_delete(httpd_req_t *req)
     return httpd_resp_send(req, NULL, 0);
 }
 
+static esp_err_t webrtc_sound_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    char q[40] = {0};
+    char id[12] = {0};
+    char on[4] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "id", id, sizeof(id)) != ESP_OK ||
+        httpd_query_key_value(q, "on", on, sizeof(on)) != ESP_OK) {
+        return send_json_error(req, "400 Bad Request", "expected ?id=N&on=1 or 0");
+    }
+    kvm_webrtc_sound((uint32_t)strtoul(id, NULL, 10), on[0] == '1');
+    httpd_resp_set_status(req, "204 No Content");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 static const httpd_uri_t k_routes[] = {
     {.uri = "/api/v1/video/webrtc", .method = HTTP_POST, .handler = webrtc_post},
     {.uri = "/api/v1/video/webrtc", .method = HTTP_DELETE, .handler = webrtc_delete},
+    {.uri = "/api/v1/video/webrtc/sound", .method = HTTP_POST, .handler = webrtc_sound_post},
 };
 
 const httpd_uri_t *webrtc_api_routes(size_t *count)

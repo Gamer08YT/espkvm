@@ -646,7 +646,7 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
     char body[1460];
     int n = snprintf(body, sizeof(body),
                      "{\"knowsDdc5v\":%s,\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
-                     "\"inputHz\":%u,\"tooFast\":%s,"
+                     "\"inputHz\":%u,\"tooFast\":%s,\"audioHz\":%u,"
                      "\"fps\":%u.%02u,\"skippedFps\":%u.%02u,\"kbps\":%u,"
                      "\"encodeUs\":%u,\"ppaUs\":%u,\"encoderBusyPct\":%u,"
                      "\"modeChanges\":%u,\"sysStatus\":%u,\"viewers\":%d,"
@@ -674,7 +674,8 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      capture_source_power_known() ? "true" : "false",
                      st.signal ? "true" : "false", (unsigned)st.hres, (unsigned)st.vres,
                      st.interlaced ? "true" : "false", (unsigned)st.input_hz,
-                     st.too_fast ? "true" : "false", (unsigned)(st.fps_x100 / 100u),
+                     st.too_fast ? "true" : "false", (unsigned)st.audio_hz,
+                     (unsigned)(st.fps_x100 / 100u),
                      (unsigned)(st.fps_x100 % 100u), (unsigned)(st.skipped_fps_x100 / 100u),
                      (unsigned)(st.skipped_fps_x100 % 100u), (unsigned)st.kbps,
                      (unsigned)st.encode_us, (unsigned)st.ppa_us, (unsigned)st.encoder_busy_pct,
@@ -1140,7 +1141,7 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
             if (++stalls > KVM_RECV_MAX_STALLS) {
                 esp_ota_abort(ota);
                 kvm_display_notice("UPDATE", "upload lost", -1, 10000);
-            ws_broadcast_update(UPDATE_FAILED, 0);
+                ws_broadcast_update(UPDATE_FAILED, 0);
                 ESP_LOGE(TAG, "update stalled after %d of %d bytes", received, req->content_len);
                 return send_json_error(req, "408 Request Timeout", "the upload went quiet");
             }
@@ -3162,6 +3163,7 @@ static void http_sess_close_cb(httpd_handle_t hd, int sockfd)
     }
     video_remove_client(sockfd);
     serial_api_drop(sockfd);
+    audio_api_drop(sockfd);
     kvm_auth_forget_socket(sockfd);
 }
 
@@ -5060,6 +5062,14 @@ httpd_handle_t http_server_start(void)
     const httpd_uri_t *serial_uris = serial_api_routes(&n_serial);
     for (size_t i = 0; i < n_serial; i++) {
         register_route(h, &serial_uris[i]);
+    }
+    if (audio_api_init() != ESP_OK) {
+        ESP_LOGW(TAG, "audio socket: no memory for its pump");
+    }
+    size_t n_audio = 0;
+    const httpd_uri_t *audio_uris = audio_api_routes(&n_audio);
+    for (size_t i = 0; i < n_audio; i++) {
+        register_route(h, &audio_uris[i]);
     }
 
     /* Before anything else is registered: a request that arrives while the

@@ -10,7 +10,9 @@
 
 #define TS 188
 #define PID_VIDEO 0x0100
+#define PID_AUDIO 0x0101
 #define TIMESCALE 90000u
+#define AAC_FRAMES 1024
 
 /* ---- reading the transport stream --------------------------------------------- */
 
@@ -19,14 +21,19 @@ typedef struct {
     size_t len;
     size_t cap;
     int64_t pts;
+    bool audio;
 } au_buf_t;
 
 typedef struct {
     const mp4_io_t *io;
     uint8_t pkt[TS];
     au_buf_t cur;   /* the access unit being gathered */
+    au_buf_t acur;  /* the AAC frame being gathered */
     au_buf_t ready; /* the last one handed out */
+    size_t awant;   /* acur's length, from its PES header */
+    bool replay;    /* pkt is read again: it ended the video unit before it */
     bool open;
+    bool aopen;
     bool eof;
 } ts_reader_t;
 
@@ -51,19 +58,60 @@ static bool au_append(au_buf_t *a, const uint8_t *p, size_t n)
     return true;
 }
 
-/* The gathered access unit becomes the ready one; the old ready buffer is reused. */
-static void hand_out(ts_reader_t *r)
+/* A gathered unit becomes the ready one; the old ready buffer is reused. */
+static void hand_out(ts_reader_t *r, au_buf_t *from)
 {
     const au_buf_t t = r->ready;
-    r->ready = r->cur;
-    r->cur = t;
-    r->cur.len = 0;
+    r->ready = *from;
+    *from = t;
+    from->len = 0;
 }
 
 static void reader_free(ts_reader_t *r)
 {
     free(r->cur.b);
+    free(r->acur.b);
     free(r->ready.b);
+}
+
+/* An audio packet. 1 = an AAC frame is complete, 0 = not yet, -1 = out of memory.
+ * Its PES packet has a length, so it is done without waiting for the next one. */
+static int audio_packet(ts_reader_t *r, const uint8_t *p, size_t at)
+{
+    if (p[1] & 0x40) {
+        const uint8_t *h = p + at;
+        r->aopen = false;
+        if (TS - at < 14 || h[0] || h[1] || h[2] != 1 || !(h[7] & 0x80)) {
+            return 0;
+        }
+        const size_t pes_len = ((size_t)h[4] << 8) | h[5];
+        if (pes_len < 3u + h[8]) {
+            return 0;
+        }
+        r->acur.len = 0;
+        r->acur.audio = true;
+        r->acur.pts = ((int64_t)(h[9] & 0x0e) << 29) | ((int64_t)h[10] << 22) |
+                      ((int64_t)(h[11] & 0xfe) << 14) | ((int64_t)h[12] << 7) | (h[13] >> 1);
+        r->awant = pes_len - 3 - h[8];
+        r->aopen = true;
+        at += 9 + h[8];
+    }
+    if (!r->aopen || at >= TS) {
+        return 0;
+    }
+    size_t n = TS - at;
+    if (n > r->awant - r->acur.len) {
+        n = r->awant - r->acur.len;
+    }
+    if (!au_append(&r->acur, p + at, n)) {
+        return -1;
+    }
+    if (r->acur.len < r->awant) {
+        return 0;
+    }
+    r->aopen = false;
+    hand_out(r, &r->acur);
+    return 1;
 }
 
 static bool read_packet(ts_reader_t *r)
@@ -79,22 +127,25 @@ static bool read_packet(ts_reader_t *r)
     return have == TS && r->pkt[0] == 0x47;
 }
 
-/* The next access unit in r->ready. 1 = got one, 0 = end, -1 = out of memory. */
+/* The next access unit or AAC frame in r->ready. 1 = got one, 0 = end, -1 = out
+ * of memory. */
 static int next_au(ts_reader_t *r)
 {
     for (;;) {
-        if (r->eof || !read_packet(r)) {
+        if (r->replay) {
+            r->replay = false;
+        } else if (r->eof || !read_packet(r)) {
             r->eof = true;
             if (r->open) {
                 r->open = false;
-                hand_out(r);
+                hand_out(r, &r->cur);
                 return 1;
             }
             return 0;
         }
         const uint8_t *p = r->pkt;
         const int pid = ((p[1] & 0x1f) << 8) | p[2];
-        if (pid != PID_VIDEO || !(p[3] & 0x10)) {
+        if ((pid != PID_VIDEO && pid != PID_AUDIO) || !(p[3] & 0x10)) {
             continue;
         }
         size_t at = 4;
@@ -103,6 +154,21 @@ static int next_au(ts_reader_t *r)
             if (at >= TS) {
                 continue;
             }
+        }
+        if (pid == PID_AUDIO) {
+            /* ts_mux never puts sound inside a picture, so the picture before
+             * it is whole: out it goes first, and the files keep their order. */
+            if ((p[1] & 0x40) && r->open) {
+                r->open = false;
+                hand_out(r, &r->cur);
+                r->replay = true;
+                return 1;
+            }
+            const int a = audio_packet(r, p, at);
+            if (a) {
+                return a;
+            }
+            continue;
         }
         if (!(p[1] & 0x40)) {
             if (r->open && !au_append(&r->cur, p + at, TS - at)) {
@@ -123,10 +189,11 @@ static int next_au(ts_reader_t *r)
         const size_t payload = at + 9 + h[8];
         const bool had = r->open;
         if (had) {
-            hand_out(r);
+            hand_out(r, &r->cur);
         }
         r->open = true;
         r->cur.pts = pts;
+        r->cur.audio = false;
         if (payload < TS && !au_append(&r->cur, p + payload, TS - payload)) {
             return -1;
         }
@@ -289,6 +356,20 @@ static void full(buf_t *o, uint8_t version, uint32_t flags)
     u8(o, flags);
 }
 
+/* Adds @p n to the 32-bit number at @p at. */
+static void add32(buf_t *o, size_t at, uint32_t n)
+{
+    if (o->bad) {
+        return;
+    }
+    uint8_t *p = o->b + at;
+    const uint32_t v = (((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]) + n;
+    p[0] = v >> 24;
+    p[1] = v >> 16;
+    p[2] = v >> 8;
+    p[3] = v;
+}
+
 static void matrix(buf_t *o)
 {
     static const uint32_t m[9] = {0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000};
@@ -297,17 +378,51 @@ static void matrix(buf_t *o)
     }
 }
 
+/* ---- AAC ----------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t rate;
+    uint8_t asc[2]; /* AudioSpecificConfig: object type, rate index, channels */
+} aac_t;
+
+/* An ADTS frame's header: @p hlen its length, @p a what it holds. */
+static bool adts_parse(const uint8_t *p, size_t n, size_t *hlen, aac_t *a)
+{
+    static const uint32_t rates[13] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                                       22050, 16000, 12000, 11025, 8000, 7350};
+    if (n < 7 || p[0] != 0xff || (p[1] & 0xf6) != 0xf0) {
+        return false;
+    }
+    const uint8_t object = (uint8_t)((p[2] >> 6) + 1);
+    const uint8_t rate_index = (p[2] >> 2) & 0x0f;
+    const uint8_t channels = (uint8_t)(((p[2] & 1) << 2) | (p[3] >> 6));
+    *hlen = (p[1] & 1) ? 7 : 9; /* 9 with a CRC */
+    if (rate_index >= 13 || n <= *hlen) {
+        return false;
+    }
+    a->rate = rates[rate_index];
+    a->asc[0] = (uint8_t)((object << 3) | (rate_index >> 1));
+    a->asc[1] = (uint8_t)(((rate_index & 1) << 7) | (channels << 3));
+    return true;
+}
+
+static bool same_aac(const aac_t *a, const aac_t *b)
+{
+    return a->rate == b->rate && a->asc[0] == b->asc[0] && a->asc[1] == b->asc[1];
+}
+
 /* ---- the conversion ------------------------------------------------------------ */
 
 typedef struct {
     uint32_t *size;
     uint32_t *delta; /* duration of each sample, 90 kHz */
     uint8_t *sync;
+    uint32_t *offset; /* into mdat's data: the tracks are interleaved */
     size_t count;
     size_t cap;
 } samples_t;
 
-static bool sample_add(samples_t *s, uint32_t size, bool sync)
+static bool sample_add(samples_t *s, uint32_t size, bool sync, uint64_t offset)
 {
     if (s->count == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 4096;
@@ -320,8 +435,12 @@ static bool sample_add(samples_t *s, uint32_t size, bool sync)
         uint8_t *y = realloc(s->sync, cap);
         if (!y) return false;
         s->sync = y;
+        uint32_t *o = realloc(s->offset, cap * sizeof(uint32_t));
+        if (!o) return false;
+        s->offset = o;
         s->cap = cap;
     }
+    s->offset[s->count] = (uint32_t)offset;
     s->size[s->count] = size;
     s->delta[s->count] = 0;
     s->sync[s->count] = sync;
@@ -329,10 +448,197 @@ static bool sample_add(samples_t *s, uint32_t size, bool sync)
     return true;
 }
 
+/* Durations, run-length coded. */
+static void stts_box(buf_t *o, const samples_t *sm)
+{
+    const size_t stts = box(o, "stts");
+    full(o, 0, 0);
+    const size_t count_at = o->len;
+    u32(o, 0);
+    uint32_t runs = 0;
+    for (size_t i = 0; i < sm->count;) {
+        size_t j = i;
+        while (j < sm->count && sm->delta[j] == sm->delta[i]) {
+            j++;
+        }
+        u32(o, (uint32_t)(j - i));
+        u32(o, sm->delta[i]);
+        runs++;
+        i = j;
+    }
+    if (!o->bad) {
+        o->b[count_at] = runs >> 24;
+        o->b[count_at + 1] = runs >> 16;
+        o->b[count_at + 2] = runs >> 8;
+        o->b[count_at + 3] = runs;
+    }
+    box_end(o, stts);
+}
+
+/*
+ * Sizes and where the samples are. Without sound they are one run, one chunk;
+ * with it every sample is a chunk of its own. Returns where the offsets are,
+ * for adding the header's length once it is known.
+ */
+static size_t chunks_box(buf_t *o, const samples_t *sm, bool interleaved)
+{
+    size_t b = box(o, "stsc");
+    full(o, 0, 0);
+    u32(o, 1);
+    u32(o, 1);
+    u32(o, interleaved ? 1 : (uint32_t)sm->count);
+    u32(o, 1);
+    box_end(o, b);
+
+    b = box(o, "stsz");
+    full(o, 0, 0);
+    u32(o, 0);
+    u32(o, (uint32_t)sm->count);
+    for (size_t i = 0; i < sm->count; i++) {
+        u32(o, sm->size[i]);
+    }
+    box_end(o, b);
+
+    const size_t stco = box(o, "stco");
+    full(o, 0, 0);
+    const size_t n = interleaved ? sm->count : 1;
+    u32(o, (uint32_t)n);
+    const size_t at = o->len;
+    for (size_t i = 0; i < n; i++) {
+        u32(o, sm->offset[i]);
+    }
+    box_end(o, stco);
+    return at;
+}
+
+/* Starts the track @p delay_ms into the movie: an empty edit, then all of it. */
+static void delay_edit(buf_t *o, uint32_t delay_ms, uint32_t duration_ms)
+{
+    const size_t edts = box(o, "edts");
+    const size_t elst = box(o, "elst");
+    full(o, 0, 0);
+    u32(o, 2);
+    u32(o, delay_ms);
+    u32(o, 0xffffffffu); /* media time -1: nothing plays */
+    u32(o, 0x10000);
+    u32(o, duration_ms);
+    u32(o, 0);
+    u32(o, 0x10000);
+    box_end(o, elst);
+    box_end(o, edts);
+}
+
+static size_t audio_trak(buf_t *o, const samples_t *am, const aac_t *aac, uint32_t delay_ms)
+{
+    uint64_t duration = 0; /* in samples */
+    for (size_t i = 0; i < am->count; i++) {
+        duration += am->delta[i];
+    }
+    const uint32_t duration_ms = (uint32_t)(duration * 1000 / aac->rate);
+    const size_t trak = box(o, "trak");
+    size_t b = box(o, "tkhd");
+    full(o, 0, 3);
+    u32(o, 0);
+    u32(o, 0);
+    u32(o, 2);
+    u32(o, 0);
+    u32(o, delay_ms + duration_ms);
+    zeros(o, 8);
+    u16(o, 0);
+    u16(o, 1);      /* alternate group */
+    u16(o, 0x100);  /* volume */
+    u16(o, 0);
+    matrix(o);
+    u32(o, 0);
+    u32(o, 0);
+    box_end(o, b);
+    if (delay_ms) {
+        delay_edit(o, delay_ms, duration_ms);
+    }
+
+    const size_t mdia = box(o, "mdia");
+    b = box(o, "mdhd");
+    full(o, 0, 0);
+    u32(o, 0);
+    u32(o, 0);
+    u32(o, aac->rate);
+    u32(o, (uint32_t)duration);
+    u16(o, 0x55c4);
+    u16(o, 0);
+    box_end(o, b);
+    b = box(o, "hdlr");
+    full(o, 0, 0);
+    u32(o, 0);
+    put(o, (const uint8_t *)"soun", 4);
+    zeros(o, 12);
+    put(o, (const uint8_t *)"ESP-KVM\0", 8);
+    box_end(o, b);
+
+    const size_t minf = box(o, "minf");
+    b = box(o, "smhd");
+    full(o, 0, 0);
+    u32(o, 0);
+    box_end(o, b);
+    const size_t dinf = box(o, "dinf");
+    const size_t dref = box(o, "dref");
+    full(o, 0, 0);
+    u32(o, 1);
+    b = box(o, "url ");
+    full(o, 0, 1);
+    box_end(o, b);
+    box_end(o, dref);
+    box_end(o, dinf);
+
+    const size_t stbl = box(o, "stbl");
+    const size_t stsd = box(o, "stsd");
+    full(o, 0, 0);
+    u32(o, 1);
+    const size_t mp4a = box(o, "mp4a");
+    zeros(o, 6);
+    u16(o, 1);
+    zeros(o, 8);
+    u16(o, (uint16_t)((aac->asc[1] >> 3) & 0x0f)); /* channels */
+    u16(o, 16);
+    u32(o, 0);
+    u32(o, aac->rate << 16);
+    b = box(o, "esds");
+    full(o, 0, 0);
+    u8(o, 0x03); /* ES descriptor */
+    u8(o, 3 + 2 + 13 + 2 + 2 + 3);
+    u16(o, 2);   /* ES id */
+    u8(o, 0);
+    u8(o, 0x04); /* decoder config */
+    u8(o, 13 + 2 + 2);
+    u8(o, 0x40); /* MPEG-4 audio */
+    u8(o, 0x15); /* audio stream */
+    u8(o, 0);    /* buffer size, 24 bits */
+    u16(o, 0x1800);
+    u32(o, 0);   /* bitrates: not given */
+    u32(o, 0);
+    u8(o, 0x05); /* decoder specific: the AudioSpecificConfig */
+    u8(o, 2);
+    put(o, aac->asc, 2);
+    u8(o, 0x06); /* SL config */
+    u8(o, 1);
+    u8(o, 2);
+    box_end(o, b);
+    box_end(o, mp4a);
+    box_end(o, stsd);
+    stts_box(o, am);
+    const size_t offsets = chunks_box(o, am, true);
+    box_end(o, stbl);
+    box_end(o, minf);
+    box_end(o, mdia);
+    box_end(o, trak);
+    return offsets;
+}
+
 bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_chapter_t *chapters,
                int chapter_count, char *err, size_t err_cap)
 {
-    samples_t sm = {0};
+    samples_t sm = {0}, am = {0};
+    aac_t aac = {0};
+    int64_t audio_first = -1, audio_prev = -1;
     nal_scan_t params = {0};
     buf_t head = {0};
     ts_reader_t rd = {.io = io};
@@ -346,6 +652,30 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
         const uint8_t *au = rd.ready.b;
         const size_t au_len = rd.ready.len;
         const int64_t pts = rd.ready.pts;
+        if (rd.ready.audio) {
+            /* Sound from the first picture on; a change of format is left out. */
+            size_t hlen;
+            aac_t a;
+            if (!sm.count || !adts_parse(au, au_len, &hlen, &a) ||
+                (am.count && !same_aac(&a, &aac))) {
+                continue;
+            }
+            aac = a;
+            if (am.count) {
+                /* Back in time where segments join: one frame's length. */
+                const int64_t d = (pts - audio_prev) * aac.rate / TIMESCALE;
+                am.delta[am.count - 1] = (d > 0 && d < (int64_t)aac.rate * 10) ? (uint32_t)d : AAC_FRAMES;
+            } else {
+                audio_first = pts;
+            }
+            audio_prev = pts;
+            if (!sample_add(&am, (uint32_t)(au_len - hlen), true, data_bytes)) {
+                got = -1;
+                break;
+            }
+            data_bytes += au_len - hlen;
+            continue;
+        }
         nal_scan_t s = {.sps = params.sps, .pps = params.pps,
                         .sps_len = params.sps_len, .pps_len = params.pps_len};
         each_nal(au, au_len, scan_nal, &s);
@@ -370,7 +700,7 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
             sm.delta[sm.count - 1] = (d > 0 && d < TIMESCALE * 10) ? (uint32_t)d : before;
         }
         prev_pts = pts;
-        if (!sample_add(&sm, (uint32_t)s.size, s.idr)) {
+        if (!sample_add(&sm, (uint32_t)s.size, s.idr, data_bytes)) {
             got = -1;
             break;
         }
@@ -393,6 +723,23 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
     for (size_t i = 0; i < sm.count; i++) {
         duration += sm.delta[i];
     }
+    const bool sound = am.count > 0;
+    uint32_t movie_ms = (uint32_t)(duration * 1000 / TIMESCALE);
+    uint32_t delay_ms = 0;
+    if (sound) {
+        am.delta[am.count - 1] = AAC_FRAMES;
+        if (audio_first > first_pts) {
+            delay_ms = (uint32_t)((audio_first - first_pts) / (TIMESCALE / 1000));
+        }
+        uint64_t audio = 0;
+        for (size_t i = 0; i < am.count; i++) {
+            audio += am.delta[i];
+        }
+        const uint32_t end_ms = delay_ms + (uint32_t)(audio * 1000 / aac.rate);
+        if (end_ms > movie_ms) {
+            movie_ms = end_ms;
+        }
+    }
 
     /* The index, written before the samples so the file plays as it arrives. */
     size_t b = box(&head, "ftyp");
@@ -407,13 +754,13 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
     u32(&head, 0);
     u32(&head, 0);
     u32(&head, 1000);
-    u32(&head, (uint32_t)(duration * 1000 / TIMESCALE));
+    u32(&head, movie_ms);
     u32(&head, 0x10000);
     u16(&head, 0x100);
     zeros(&head, 10);
     matrix(&head);
     zeros(&head, 24);
-    u32(&head, 2);
+    u32(&head, sound ? 3 : 2); /* the next track id */
     box_end(&head, b);
 
     const size_t trak = box(&head, "trak");
@@ -500,29 +847,7 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
     box_end(&head, avc1);
     box_end(&head, stsd);
 
-    /* Durations, run-length coded. */
-    const size_t stts = box(&head, "stts");
-    full(&head, 0, 0);
-    const size_t stts_count_at = head.len;
-    u32(&head, 0);
-    uint32_t runs = 0;
-    for (size_t i = 0; i < sm.count;) {
-        size_t j = i;
-        while (j < sm.count && sm.delta[j] == sm.delta[i]) {
-            j++;
-        }
-        u32(&head, (uint32_t)(j - i));
-        u32(&head, sm.delta[i]);
-        runs++;
-        i = j;
-    }
-    if (!head.bad) {
-        head.b[stts_count_at] = runs >> 24;
-        head.b[stts_count_at + 1] = runs >> 16;
-        head.b[stts_count_at + 2] = runs >> 8;
-        head.b[stts_count_at + 3] = runs;
-    }
-    box_end(&head, stts);
+    stts_box(&head, &sm);
 
     const size_t stss = box(&head, "stss");
     full(&head, 0, 0);
@@ -538,33 +863,12 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
     }
     box_end(&head, stss);
 
-    b = box(&head, "stsc");
-    full(&head, 0, 0);
-    u32(&head, 1);
-    u32(&head, 1);
-    u32(&head, (uint32_t)sm.count);
-    u32(&head, 1);
-    box_end(&head, b);
-
-    b = box(&head, "stsz");
-    full(&head, 0, 0);
-    u32(&head, 0);
-    u32(&head, (uint32_t)sm.count);
-    for (size_t i = 0; i < sm.count; i++) {
-        u32(&head, sm.size[i]);
-    }
-    box_end(&head, b);
-
-    const size_t stco = box(&head, "stco");
-    full(&head, 0, 0);
-    u32(&head, 1);
-    const size_t offset_at = head.len;
-    u32(&head, 0); /* filled in once the header's length is known */
-    box_end(&head, stco);
+    const size_t offset_at = chunks_box(&head, &sm, sound);
     box_end(&head, stbl);
     box_end(&head, minf);
     box_end(&head, mdia);
     box_end(&head, trak);
+    const size_t audio_offset_at = sound ? audio_trak(&head, &am, &aac, delay_ms) : 0;
 
     /* Chapters, the way Nero wrote them and VLC, mpv and ffmpeg read them. */
     if (chapter_count > 0 && chapters[0].at_us < (int64_t)(duration * 1000000 / TIMESCALE)) {
@@ -607,11 +911,14 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
         snprintf(err, err_cap, "out of memory building the MP4 index");
         goto out;
     }
+    /* The offsets were counted from the samples' start; the header comes first. */
     const uint32_t data_at = (uint32_t)(head.len + 8);
-    head.b[offset_at] = data_at >> 24;
-    head.b[offset_at + 1] = data_at >> 16;
-    head.b[offset_at + 2] = data_at >> 8;
-    head.b[offset_at + 3] = data_at;
+    for (size_t i = 0; i < (sound ? sm.count : 1); i++) {
+        add32(&head, offset_at + i * 4, data_at);
+    }
+    for (size_t i = 0; i < am.count; i++) {
+        add32(&head, audio_offset_at + i * 4, data_at);
+    }
 
     const uint8_t mdat[8] = {(uint8_t)((data_bytes + 8) >> 24), (uint8_t)((data_bytes + 8) >> 16),
                              (uint8_t)((data_bytes + 8) >> 8), (uint8_t)(data_bytes + 8),
@@ -628,15 +935,29 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
     }
     reader_free(&rd);
     rd = (ts_reader_t){.io = io};
-    size_t written = 0;
+    size_t written = 0, audio_written = 0;
     bool started = false;
-    while ((got = next_au(&rd)) == 1 && written < sm.count) {
+    while ((got = next_au(&rd)) == 1 && (written < sm.count || audio_written < am.count)) {
         const uint8_t *au = rd.ready.b;
         const size_t au_len = rd.ready.len;
+        if (rd.ready.audio) {
+            size_t hlen;
+            aac_t a;
+            if (!started || audio_written >= am.count || !adts_parse(au, au_len, &hlen, &a) ||
+                !same_aac(&a, &aac)) {
+                continue;
+            }
+            if (au_len - hlen != am.size[audio_written] || !io->write(io->io, au + hlen, au_len - hlen)) {
+                snprintf(err, err_cap, "could not write the MP4");
+                goto out;
+            }
+            audio_written++;
+            continue;
+        }
         nal_scan_t probe = {.sps = params.sps, .pps = params.pps,
                             .sps_len = params.sps_len, .pps_len = params.pps_len};
         each_nal(au, au_len, scan_nal, &probe);
-        if (!probe.size || (!started && !probe.idr)) {
+        if (!probe.size || (!started && !probe.idr) || written >= sm.count) {
             continue;
         }
         started = true;
@@ -648,7 +969,7 @@ bool ts_to_mp4(const mp4_io_t *io, uint32_t width, uint32_t height, const mp4_ch
         }
         written++;
     }
-    if (written != sm.count) {
+    if (written != sm.count || audio_written != am.count) {
         snprintf(err, err_cap, "the recording changed while it was converted");
         goto out;
     }
@@ -659,6 +980,11 @@ out:
     free(sm.size);
     free(sm.delta);
     free(sm.sync);
+    free(sm.offset);
+    free(am.size);
+    free(am.delta);
+    free(am.sync);
+    free(am.offset);
     free(params.sps);
     free(params.pps);
     free(head.b);

@@ -11,7 +11,7 @@
 | Alt+Tab, Ctrl+W and the Windows key reaching the target | works in Chrome and Edge; full screen, with control taken, and the "All keys" button on. Firefox and Safari have no way to give a page those keys |
 | Waking a sleeping target from the keyboard | works; over USB, if the machine allows it. Otherwise Wake-on-LAN or the ATX button |
 | Pasting text with a keyboard layout | works; US English, Russian, Czech, Ukrainian, Lithuanian |
-| Use from a phone or tablet | works; touch trackpad and on-screen keyboard |
+| Use from a phone or tablet | works; touch trackpad, pinch zoom and on-screen keyboard |
 | Multiple viewers, one in control at a time with takeover | works |
 | User-defined key macros | works; the commands are in [SCRIPTS.md](SCRIPTS.md) |
 | Runbooks: a macro that waits for words on the screen, run on the device | works; `wait Press F2`, then `key f2`. Carries on with the browser closed, and each one is a button in Home Assistant. Text screens only. [SCRIPTS.md](SCRIPTS.md) |
@@ -48,7 +48,7 @@
 | A viewing token for dashboards | works; off until you make one. Opens the stream and the figures, and nothing that can touch the target |
 | Home Assistant integration over MQTT | works; off by default, auto-discovered. Sensors, buttons, an update entity, a camera holding a still of the screen |
 | VPN - WireGuard or native Tailscale | works; off by default, pick one in Settings. Tailscale needs no port forward or gateway |
-| HDMI audio | not implemented; the bridge offers it as I2S, but the wires and the code are missing |
+| HDMI audio: hear the target, and record its sound | new; on boards with a TC358743 (the C790 and the like), three wires and a ground to pins you pick in Settings &rarr; Audio. Heard in the console over WebRTC on the Function EV; sound in recordings is not tried on hardware yet. The M5Stack Add-on Display In has no audio lines ([why](HARDWARE-NOTES.md#no-audio-from-the-m5stack-add-on-display-in---measured)) |
 
 ## The parts
 
@@ -95,6 +95,31 @@ as MJPEG, at a fraction of the bandwidth, and cooler. On the older silicon the
 conversion and the encode at least overlap now instead of running one after the
 other. The measurements are in
 [HARDWARE-NOTES.md](HARDWARE-NOTES.md).
+
+## Sound
+
+The capture chip takes the sound out of the HDMI stream and sends it as I2S:
+a bit clock, a word clock and data. The device listens as the slave, at
+whatever rate the source plays (32 to 96 kHz), and brings it to 48 kHz.
+
+In the console the sound is off until the speaker button under the picture is
+pressed, and the device encodes nothing while nobody listens. Over WebRTC the
+sound is Opus (the audio codec WebRTC uses) in the same connection as the
+picture, 20 ms a packet. A console that gets its picture over the WebSocket gets
+the same Opus packets on a socket of its own and decodes them with WebCodecs, so that needs HTTPS. After a page
+reload the browser keeps the sound back until the page is clicked; the button
+pulses until then.
+
+Opus at its lowest complexity takes about 7 ms of each 20 ms on one core. It
+runs below the video, so the picture keeps its frame rate with the sound on.
+
+A recording gets the sound too, as AAC (48 kHz mono, 64 kbit/s) next to the
+picture in the .ts, and a dashcam clip has it in its MP4. The dashcam in
+memory keeps the encoder running and holds the last two minutes of sound,
+about 1.3 MB of PSRAM, so a clip's past has sound too. Where the source
+sends no sound the track holds silence, so picture and sound stay in step. A
+timelapse has none. `GET /api/v1/audio/clip.wav?s=5` hands a script the next
+five seconds.
 
 ## Input
 
@@ -151,7 +176,7 @@ The record button under the picture writes the
 screen to the microSD card, into VIDEO/, as H.264 in .ts files. It records the
 same stream the viewers get, so it costs no second encode: on the Function EV the
 picture stays at 21-22 fps with a video playing on the target, and no frame is
-lost. A .ts plays in VLC and most players, and a file cut off by a pulled card or
+lost. With HDMI audio on, the sound goes in too. A .ts plays in VLC and most players, and a file cut off by a pulled card or
 a power cut plays up to the last few seconds. Files over 3.9 GB continue in a
 second file, on FAT32 and exFAT alike: the device keeps every file under 4 GB. The camera button saves a JPEG into
 SCREENSHOTS/, on either codec. Both are listed in their own panel, where they can

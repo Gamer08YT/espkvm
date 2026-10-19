@@ -4,7 +4,8 @@
  *
  * The muxer's output parsed back: every packet well-formed, counters
  * continuous, the tables' CRCs right, and each frame coming out of its PES
- * byte for byte with the time it went in with.
+ * byte for byte with the time it went in with. Then the same with sound: an
+ * audio stream in the table, and AAC frames between the pictures.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,9 @@ typedef struct {
 #define MAX_FRAMES 64
 static pes_t got[MAX_FRAMES];
 static int got_n;
+static pes_t got_audio[MAX_FRAMES];
+static int got_audio_n;
+static bool table_has_audio;
 
 static void parse(void)
 {
@@ -65,7 +69,7 @@ static void parse(void)
         cc[i] = -1;
     }
     int tables = 0;
-    pes_t *cur = NULL;
+    pes_t *cur = NULL, *cur_audio = NULL;
     for (size_t off = 0; off < stream_len; off += TS_PACKET) {
         const uint8_t *p = stream + off;
         CHECK(p[0] == 0x47, "sync byte at %zu", off);
@@ -101,8 +105,32 @@ static void parse(void)
             CHECK(crc32_mpeg(p + s, 3 + sl) == 0, "table CRC on pid %d", pid);
             if (pid == 0x1000) {
                 CHECK(p[s + 12] == 0x1b, "stream type %02x", p[s + 12]);
+                table_has_audio = sl == 23 && p[s + 17] == 0x0f && p[s + 18] == 0xe1 && p[s + 19] == 0x01;
             }
             tables++;
+            continue;
+        }
+        if (pid == 0x0101) {
+            if (pusi) {
+                CHECK(got_audio_n < MAX_FRAMES, "too many audio frames");
+                cur_audio = &got_audio[got_audio_n++];
+                memset(cur_audio, 0, sizeof(*cur_audio));
+                CHECK(!have_pcr, "audio with a PCR");
+                const uint8_t *h = p + at;
+                CHECK(h[0] == 0 && h[1] == 0 && h[2] == 1 && h[3] == 0xc0, "audio PES start code");
+                CHECK((h[7] & 0xc0) == 0x80 && h[8] == 5, "audio PTS flags");
+                cur_audio->pts = ((uint64_t)(h[9] & 0x0e) << 29) | ((uint64_t)h[10] << 22) |
+                                 ((uint64_t)(h[11] & 0xfe) << 14) | ((uint64_t)h[12] << 7) | (h[13] >> 1);
+                cur_audio->pcr = ((size_t)h[4] << 8) | h[5]; /* PES length, kept here */
+                at += 14;
+            }
+            CHECK(cur_audio != NULL, "audio before any audio start");
+            if (cur_audio) {
+                const size_t n = TS_PACKET - at;
+                cur_audio->data = realloc(cur_audio->data, cur_audio->len + n);
+                memcpy(cur_audio->data + cur_audio->len, p + at, n);
+                cur_audio->len += n;
+            }
             continue;
         }
         CHECK(pid == 0x0100, "unexpected pid %d", pid);
@@ -167,10 +195,41 @@ int main(void)
             CHECK(memcmp(got[i].data + 6, frames[i], sizes[i]) == 0, "frame %d bytes", i);
         }
     }
+    CHECK(!table_has_audio, "an audio stream in a recording without sound");
+    const size_t video_packets = stream_len / TS_PACKET;
+
+    /* With sound: a frame of AAC after each picture, sizes over the same edges. */
+    stream_len = 0;
+    got_n = 0;
+    ts_mux_init(&m, collect, NULL);
+    m.audio = true;
+    const size_t asizes[] = {7, 169, 170, 171, 183, 184, 185, 360, 700, 1543};
+    const int an = (int)(sizeof(asizes) / sizeof(asizes[0]));
+    uint8_t *afr[16];
+    for (int i = 0; i < an; i++) {
+        ts_mux_frame(&m, frames[i], sizes[i], (uint64_t)i * 3000, i == 0);
+        afr[i] = malloc(asizes[i]);
+        for (size_t k = 0; k < asizes[i]; k++) {
+            afr[i][k] = (uint8_t)(k * 13 + i);
+        }
+        ts_mux_audio(&m, afr[i], asizes[i], (uint64_t)i * 1920);
+    }
+    parse();
+    CHECK(table_has_audio, "no audio stream in the table");
+    CHECK(got_n == an, "pictures out %d, in %d", got_n, an);
+    CHECK(got_audio_n == an, "audio frames out %d, in %d", got_audio_n, an);
+    for (int i = 0; i < got_audio_n && i < an; i++) {
+        CHECK(got_audio[i].pts == (uint64_t)i * 1920 + 63000, "audio %d PTS", i);
+        CHECK(got_audio[i].pcr == asizes[i] + 8, "audio %d PES length", i);
+        CHECK(got_audio[i].len == asizes[i], "audio %d length %zu, want %zu", i, got_audio[i].len, asizes[i]);
+        if (got_audio[i].len == asizes[i]) {
+            CHECK(memcmp(got_audio[i].data, afr[i], asizes[i]) == 0, "audio %d bytes", i);
+        }
+    }
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;
     }
-    printf("ts_mux: %d frames, %zu packets, all well-formed\n", n, stream_len / TS_PACKET);
+    printf("ts_mux: %d frames, %zu packets, all well-formed; %d with sound\n", n, video_packets, an);
     return 0;
 }

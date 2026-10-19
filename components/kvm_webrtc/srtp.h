@@ -24,6 +24,7 @@ extern "C" {
 #define SRTP_TAG_LEN 10
 /* SRTCP adds the E flag + index in front of the tag. */
 #define SRTCP_TRAILER_LEN (4 + SRTP_TAG_LEN)
+#define SRTCP_SENDERS 2
 
 typedef struct {
     wr_aes_t *rtp_aes, *rtcp_aes;
@@ -35,10 +36,15 @@ typedef struct {
     bool seq_seen;
     /* Sending RTCP. */
     uint32_t rtcp_index;
-    /* Receiving RTCP: replay window over the last 64 indexes. */
-    uint32_t in_max;
-    uint64_t in_window;
-    bool in_seen;
+    /* Receiving RTCP: a replay window over the last 64 indexes for each
+       sender. A browser that gets audio and video may report on both from
+       separate SSRCs, each with its own index. */
+    struct {
+        uint32_t ssrc;
+        uint32_t max;
+        uint64_t window;
+        bool seen;
+    } in[SRTCP_SENDERS];
 } srtp_ctx_t;
 
 /** The RFC 3711 4.3 key derivation, for the tests. */

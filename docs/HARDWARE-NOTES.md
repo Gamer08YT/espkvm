@@ -384,13 +384,12 @@ The same sheet has three things worth using:
   LT6911D's CEC, if it has a usable one, is not documented; nothing here drives
   it yet.
 
-## The bridge's audio output - read off the wiki, not off a board
+## The bridge's audio output - measured on the Function EV
 
-Everything above was measured here; this section was not. Nothing in the
-firmware captures audio yet, so none of it is proved.
-
-The TC358743 pulls the audio out of the HDMI stream and hands it over as I2S,
-and `set_hdmi_audio()` in `components/tc358743` already turns that on. The C790
+The TC358743 pulls the audio out of the HDMI stream and hands it over as I2S;
+`set_hdmi_audio()` in `components/tc358743` turns that on. Its audio registers
+were at the wrong addresses at first (0x8602..0x8612); the ones in use now
+follow the Linux driver's map, and the sample rate comes from the chip. The C790
 brings those signals out on a separate 5-pin connector on its left edge, next to
 the HDMI socket. They are not on the 15-pin CSI ribbon, which carries the video
 lanes, I2C, 3.3 V and ground and nothing else. Geekworm puts a cable for it in
@@ -426,9 +425,14 @@ display, whose five defaults are all on the other one. Every board's header
 table is still `headerVerified = false`, so read the silkscreen before
 soldering.
 
-The voltage the C790 drives those pins at has not been measured either. At
-1.8 V rather than 3.3 V the P4 would not read a logic high, and the link would
-need a level shifter.
+On the Function EV the C790's cable went to pins 12, 38, 35 and 34 of the Pi
+header (GPIO22 SCK, GPIO27 SD, GPIO53 WFS, ground). The P4 reads the C790's
+levels as they are, with no level shifter, and gets 48 kHz from a PC. The
+bridge sends 32-bit slots, the sample in the top 16 bits.
+
+The I2S reader has to run above lwIP (priority 19). At 6 it waited up to 37 ms
+behind a viewer's video, the 40 ms DMA ring overflowed, and each overflow was a
+click.
 
 ## Things that turned out not to be true
 

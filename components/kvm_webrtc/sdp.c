@@ -159,9 +159,10 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
     out->pt = -1;
     pt_info_t pts[MAX_PT];
     int pt_n = 0;
-    /* 0: session level, 1: the video m-line we take, 2: one we decline. */
+    /* 0: session level, 1: the video m-line, 2: one refused, 3: the audio one. */
     int section = 0;
     bool took_video = false;
+    bool audio_opus = false;
 
     const char *p = sdp;
     while (*p) {
@@ -179,6 +180,10 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
             if (!took_video && starts(line, len, "m=video ")) {
                 took_video = true;
                 section = 1;
+            } else if (!out->has_audio && starts(line, len, "m=audio ")) {
+                out->has_audio = true;
+                out->audio_first = !took_video;
+                section = 3;
             } else {
                 section = 2;
             }
@@ -186,6 +191,27 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
         }
         if (section == 2) {
             continue;
+        }
+        if (section == 3) {
+            if (starts(line, len, "a=mid:")) {
+                copy_rest(line, len, 6, out->audio_mid, sizeof(out->audio_mid));
+            } else if (!audio_opus && starts(line, len, "a=rtpmap:")) {
+                size_t used;
+                const int pt = read_pt(line + 9, len - 9, &used);
+                const char *codec = line + 9 + used;
+                const size_t cl = len - 9 - used;
+                if (pt >= 0 &&
+                    (starts(codec, cl, " opus/48000/2") || starts(codec, cl, " OPUS/48000/2"))) {
+                    out->audio_pt = pt;
+                    audio_opus = true;
+                }
+                continue;
+            }
+            /* ICE and DTLS lines in a bundled audio section are the same as the
+               video's; they are read below like any other. */
+            if (!starts(line, len, "a=ice-") && !starts(line, len, "a=fingerprint:")) {
+                continue;
+            }
         }
         /* ICE and DTLS may sit at session or media level; media wins. */
         if (starts(line, len, "a=ice-ufrag:")) {
@@ -271,11 +297,15 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
             }
         }
     }
-    /* One m-line, or the answer would have to decline the rest; this
-       console never offers more. The mid goes back into the answer, so it
-       must be a plain token. */
-    if (!took_video || out->m_count != 1 || !best || !out->ufrag[0] || !out->pwd[0] ||
-        !out->has_fingerprint || !token(out->mid) || !hex_token(best->plid)) {
+    /* Video, and audio if any, or the answer would have to decline the rest;
+       this console never offers more. The mids go back into the answer, so
+       they must be plain tokens. */
+    if (!took_video || out->m_count != (out->has_audio ? 2 : 1) || !best || !out->ufrag[0] ||
+        !out->pwd[0] || !out->has_fingerprint || !token(out->mid) || !hex_token(best->plid)) {
+        return -1;
+    }
+    if (out->has_audio &&
+        (!audio_opus || !token(out->audio_mid) || strcmp(out->audio_mid, out->mid) == 0)) {
         return -1;
     }
     out->pt = best->pt;
@@ -311,6 +341,41 @@ static void put(sb_t *s, const char *fmt, ...)
     s->len += (size_t)n;
 }
 
+/* The lines every bundled m-line repeats: transport, ICE, DTLS. */
+static void put_transport(sb_t *s, const sdp_answer_params_t *a, const char *mid)
+{
+    put(s, "c=IN IP4 0.0.0.0\r\n");
+    put(s, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 ", a->ufrag, a->pwd);
+    for (int i = 0; i < 32; i++) {
+        put(s, i < 31 ? "%02X:" : "%02X\r\n", a->fingerprint[i]);
+    }
+    put(s, "a=setup:passive\r\na=mid:%s\r\na=sendonly\r\na=rtcp-mux\r\n", mid);
+}
+
+static void put_candidates(sb_t *s, const sdp_answer_params_t *a)
+{
+    for (int i = 0; i < a->cand_count; i++) {
+        const uint8_t *ip = (const uint8_t *)&a->cands[i].ip_be;
+        /* Host candidates only; priority per RFC 8445 5.1.2 with a local
+           preference that keeps them in the order given. */
+        const unsigned prio = (126u << 24) | ((unsigned)(65535 - i) << 8) | 255u;
+        put(s, "a=candidate:%d 1 udp %u %u.%u.%u.%u %u typ host\r\n", i + 1, prio, ip[0], ip[1],
+            ip[2], ip[3], (unsigned)a->cands[i].port);
+    }
+    put(s, "a=end-of-candidates\r\n");
+}
+
+static void put_audio(sb_t *s, const sdp_offer_t *o, const sdp_answer_params_t *a)
+{
+    put(s, "m=audio 9 UDP/TLS/RTP/SAVPF %d\r\n", o->audio_pt);
+    put_transport(s, a, o->audio_mid);
+    put(s, "a=rtpmap:%d opus/48000/2\r\n", o->audio_pt);
+    put(s, "a=fmtp:%d minptime=10;stereo=1;sprop-stereo=1\r\n", o->audio_pt);
+    /* The same stream id as the video: the browser plays the two together. */
+    put(s, "a=msid:espkvm sound\r\na=ssrc:%u cname:espkvm\r\n", (unsigned)a->audio_ssrc);
+    put_candidates(s, a);
+}
+
 int sdp_write_answer(const sdp_offer_t *o, const sdp_answer_params_t *a, char *out, size_t cap)
 {
     if (cap == 0) {
@@ -318,13 +383,19 @@ int sdp_write_answer(const sdp_offer_t *o, const sdp_answer_params_t *a, char *o
     }
     sb_t s = {.b = out, .cap = cap};
     put(&s, "v=0\r\no=- %u 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n", (unsigned)a->ssrc);
-    put(&s, "a=group:BUNDLE %s\r\na=ice-lite\r\na=msid-semantic: WMS espkvm\r\n", o->mid);
-    put(&s, "m=video 9 UDP/TLS/RTP/SAVPF %d\r\nc=IN IP4 0.0.0.0\r\n", o->pt);
-    put(&s, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 ", a->ufrag, a->pwd);
-    for (int i = 0; i < 32; i++) {
-        put(&s, i < 31 ? "%02X:" : "%02X\r\n", a->fingerprint[i]);
+    if (!o->has_audio) {
+        put(&s, "a=group:BUNDLE %s\r\n", o->mid);
+    } else if (o->audio_first) {
+        put(&s, "a=group:BUNDLE %s %s\r\n", o->audio_mid, o->mid);
+    } else {
+        put(&s, "a=group:BUNDLE %s %s\r\n", o->mid, o->audio_mid);
     }
-    put(&s, "a=setup:passive\r\na=mid:%s\r\na=sendonly\r\na=rtcp-mux\r\n", o->mid);
+    put(&s, "a=ice-lite\r\na=msid-semantic: WMS espkvm\r\n");
+    if (o->has_audio && o->audio_first) {
+        put_audio(&s, o, a);
+    }
+    put(&s, "m=video 9 UDP/TLS/RTP/SAVPF %d\r\n", o->pt);
+    put_transport(&s, a, o->mid);
     if (o->rtcp_rsize) {
         put(&s, "a=rtcp-rsize\r\n");
     }
@@ -349,15 +420,10 @@ int sdp_write_answer(const sdp_offer_t *o, const sdp_answer_params_t *a, char *o
             o->playout_ext);
     }
     put(&s, "a=msid:espkvm screen\r\na=ssrc:%u cname:espkvm\r\n", (unsigned)a->ssrc);
-    for (int i = 0; i < a->cand_count; i++) {
-        const uint8_t *ip = (const uint8_t *)&a->cands[i].ip_be;
-        /* Host candidates only; priority per RFC 8445 5.1.2 with a local
-           preference that keeps them in the order given. */
-        const unsigned prio = (126u << 24) | ((unsigned)(65535 - i) << 8) | 255u;
-        put(&s, "a=candidate:%d 1 udp %u %u.%u.%u.%u %u typ host\r\n", i + 1, prio, ip[0], ip[1],
-            ip[2], ip[3], (unsigned)a->cands[i].port);
+    put_candidates(&s, a);
+    if (o->has_audio && !o->audio_first) {
+        put_audio(&s, o, a);
     }
-    put(&s, "a=end-of-candidates\r\n");
     if (s.full) {
         return -1;
     }

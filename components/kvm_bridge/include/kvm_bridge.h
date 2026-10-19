@@ -51,6 +51,7 @@ typedef struct {
     bool sync;       /**< the bridge has locked to the sync */
     bool interlaced;
     uint8_t hz;      /**< measured refresh rate, 0 when the bridge cannot tell */
+    uint32_t audio_hz; /**< HDMI audio sample rate, 0 when there is none */
 } kvm_bridge_timings_t;
 
 /**
@@ -126,6 +127,8 @@ typedef struct {
      * attached".
      */
     bool knows_ddc5v;
+    /** The chip sends the HDMI sound out as I2S, for kvm_audio to read. */
+    bool i2s_audio;
 } kvm_bridge_t;
 
 /**

@@ -9,7 +9,9 @@
 #define PID_PAT 0x0000
 #define PID_PMT 0x1000
 #define PID_VIDEO 0x0100
+#define PID_AUDIO 0x0101
 #define STREAM_H264 0x1b
+#define STREAM_AAC_ADTS 0x0f
 
 /* The decoder clock runs this far behind the picture times, so every frame
  * arrives before it is due - 700 ms is what most muxers use. */
@@ -69,7 +71,7 @@ static void tables(ts_mux_t *m)
 
     const uint8_t pmt[] = {
         0x02,                   /* table_id: program map */
-        0xb0, 18,
+        0xb0, m->audio ? 23 : 18,
         0x00, 0x01,             /* program 1 */
         0xc1,
         0x00, 0x00,
@@ -78,8 +80,11 @@ static void tables(ts_mux_t *m)
         STREAM_H264,
         (uint8_t)(0xe0 | (PID_VIDEO >> 8)), (uint8_t)(PID_VIDEO & 0xff),
         0xf0, 0x00,             /* ES_info_length 0 */
+        STREAM_AAC_ADTS,        /* left out without sound */
+        (uint8_t)(0xe0 | (PID_AUDIO >> 8)), (uint8_t)(PID_AUDIO & 0xff),
+        0xf0, 0x00,
     };
-    psi(m, PID_PMT, &m->cc_pmt, pmt, sizeof(pmt));
+    psi(m, PID_PMT, &m->cc_pmt, pmt, m->audio ? sizeof(pmt) : sizeof(pmt) - 5);
 }
 
 void ts_mux_init(ts_mux_t *m, ts_mux_out_t out, void *user)
@@ -87,6 +92,91 @@ void ts_mux_init(ts_mux_t *m, ts_mux_out_t out, void *user)
     memset(m, 0, sizeof(*m));
     m->out = out;
     m->user = user;
+}
+
+/*
+ * A PES packet - @p lead, then @p data - cut into transport packets on @p pid.
+ * The video's first packet carries the clock (and marks a keyframe); the last
+ * of any is padded out to 188 bytes with adaptation-field stuffing.
+ */
+static void pes_out(ts_mux_t *m, uint16_t pid, uint8_t *cc, const uint8_t *lead, size_t ln,
+                    const uint8_t *data, size_t len, uint64_t pcr, bool keyframe)
+{
+    const bool video = pid == PID_VIDEO;
+    const size_t total = ln + len;
+    size_t sent = 0;
+    bool first = true;
+    while (sent < total) {
+        uint8_t pkt[TS_PACKET];
+        size_t at = 4;
+        const size_t left = total - sent;
+        size_t af = 0; /* adaptation field length byte's value, 0 = none */
+        bool has_af = false;
+        if (first && video) {
+            has_af = true;
+            af = 1 + 6; /* flags + PCR */
+        }
+        size_t room = TS_PACKET - 4 - (has_af ? 1 + af : 0);
+        if (left < room) {
+            const size_t pad = room - left;
+            if (!has_af) {
+                has_af = true;
+                /* One spare byte is the length byte alone (a zero-length field);
+                 * more take a flags byte and then stuffing. */
+                af = pad - 1;
+            } else {
+                af += pad;
+            }
+            room = left;
+        }
+
+        header(pkt, pid, first, *cc);
+        *cc = (uint8_t)((*cc + 1) & 0x0f);
+        if (has_af) {
+            pkt[3] |= 0x20;
+            pkt[at++] = (uint8_t)af;
+            if (af > 0) {
+                size_t used = 1;
+                uint8_t flags = 0;
+                if (first && video) {
+                    flags |= 0x10; /* PCR */
+                    if (keyframe) {
+                        flags |= 0x40; /* random access */
+                    }
+                }
+                pkt[at++] = flags;
+                if (first && video) {
+                    pkt[at++] = (uint8_t)(pcr >> 25);
+                    pkt[at++] = (uint8_t)(pcr >> 17);
+                    pkt[at++] = (uint8_t)(pcr >> 9);
+                    pkt[at++] = (uint8_t)(pcr >> 1);
+                    pkt[at++] = (uint8_t)(((pcr & 1) << 7) | 0x7e);
+                    pkt[at++] = 0x00;
+                    used += 6;
+                }
+                memset(pkt + at, 0xff, af - used);
+                at += af - used;
+            }
+        }
+        /* Payload: the PES lead first, then the frame. */
+        size_t n = room;
+        while (n) {
+            if (sent < ln) {
+                const size_t k = (ln - sent) < n ? (ln - sent) : n;
+                memcpy(pkt + at, lead + sent, k);
+                at += k;
+                sent += k;
+                n -= k;
+            } else {
+                memcpy(pkt + at, data + (sent - ln), n);
+                at += n;
+                sent += n;
+                n = 0;
+            }
+        }
+        m->out(m->user, pkt);
+        first = false;
+    }
 }
 
 void ts_mux_frame(ts_mux_t *m, const uint8_t *data, size_t len, uint64_t pts_90k, bool keyframe)
@@ -119,80 +209,22 @@ void ts_mux_frame(ts_mux_t *m, const uint8_t *data, size_t len, uint64_t pts_90k
     memcpy(lead + ln, aud, sizeof(aud));
     ln += sizeof(aud);
 
-    const size_t total = ln + len;
-    size_t sent = 0;
-    bool first = true;
-    while (sent < total) {
-        uint8_t pkt[TS_PACKET];
-        size_t at = 4;
-        const size_t left = total - sent;
-        /* The first packet carries the clock (and marks a keyframe); the last is
-         * padded out to 188 bytes with adaptation-field stuffing. */
-        size_t af = 0; /* adaptation field length byte's value, 0 = none */
-        bool has_af = false;
-        if (first) {
-            has_af = true;
-            af = 1 + 6; /* flags + PCR */
-        }
-        size_t room = TS_PACKET - 4 - (has_af ? 1 + af : 0);
-        if (left < room) {
-            const size_t pad = room - left;
-            if (!has_af) {
-                has_af = true;
-                /* One spare byte is the length byte alone (a zero-length field);
-                 * more take a flags byte and then stuffing. */
-                af = pad - 1;
-            } else {
-                af += pad;
-            }
-            room = left;
-        }
+    pes_out(m, PID_VIDEO, &m->cc_video, lead, ln, data, len, pcr, keyframe);
+}
 
-        header(pkt, PID_VIDEO, first, m->cc_video);
-        m->cc_video = (uint8_t)((m->cc_video + 1) & 0x0f);
-        if (has_af) {
-            pkt[3] |= 0x20;
-            pkt[at++] = (uint8_t)af;
-            if (af > 0) {
-                size_t used = 1;
-                uint8_t flags = 0;
-                if (first) {
-                    flags |= 0x10; /* PCR */
-                    if (keyframe) {
-                        flags |= 0x40; /* random access */
-                    }
-                }
-                pkt[at++] = flags;
-                if (first) {
-                    pkt[at++] = (uint8_t)(pcr >> 25);
-                    pkt[at++] = (uint8_t)(pcr >> 17);
-                    pkt[at++] = (uint8_t)(pcr >> 9);
-                    pkt[at++] = (uint8_t)(pcr >> 1);
-                    pkt[at++] = (uint8_t)(((pcr & 1) << 7) | 0x7e);
-                    pkt[at++] = 0x00;
-                    used += 6;
-                }
-                memset(pkt + at, 0xff, af - used);
-                at += af - used;
-            }
-        }
-        /* Payload: the PES lead first, then the frame. */
-        size_t n = room;
-        while (n) {
-            if (sent < ln) {
-                const size_t k = (ln - sent) < n ? (ln - sent) : n;
-                memcpy(pkt + at, lead + sent, k);
-                at += k;
-                sent += k;
-                n -= k;
-            } else {
-                memcpy(pkt + at, data + (sent - ln), n);
-                at += n;
-                sent += n;
-                n = 0;
-            }
-        }
-        m->out(m->user, pkt);
-        first = false;
-    }
+void ts_mux_audio(ts_mux_t *m, const uint8_t *adts, size_t len, uint64_t pts_90k)
+{
+    const uint64_t pts = (pts_90k + PCR_LEAD_90K) & 0x1ffffffffull;
+    const size_t pes_len = 3 + 5 + len; /* flags, header length, PTS, the frame */
+    const uint8_t lead[14] = {
+        0x00, 0x00, 0x01, 0xc0, /* stream_id: audio */
+        (uint8_t)(pes_len >> 8), (uint8_t)pes_len,
+        0x80, 0x80, 5,
+        (uint8_t)(0x21 | ((pts >> 29) & 0x0e)),
+        (uint8_t)(pts >> 22),
+        (uint8_t)(0x01 | ((pts >> 14) & 0xfe)),
+        (uint8_t)(pts >> 7),
+        (uint8_t)(0x01 | ((pts << 1) & 0xfe)),
+    };
+    pes_out(m, PID_AUDIO, &m->cc_audio, lead, sizeof(lead), adts, len, 0, false);
 }

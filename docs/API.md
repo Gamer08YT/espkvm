@@ -89,12 +89,20 @@ be given a URL.
 | `GET /stream` | MJPEG as `multipart/x-mixed-replace`; answers 409 while H.264 is selected |
 | `POST /api/v1/video/webrtc` | WebRTC signaling: `{"sdp": offer}` in, `{"id", "sdp": answer}` out, no trickle. The offer must have one video m-line with H.264 packetization-mode 1 and a SHA-256 fingerprint. 409 while MJPEG runs or WebRTC is off, 503 when it is not ready. The session ends with the sign-in |
 | `DELETE /api/v1/video/webrtc?id=N` | close WebRTC session N; 204 |
+| `POST /api/v1/video/webrtc/sound?id=N&on=1` | the target's sound in WebRTC session N on (`on=0`: off). The offer has to carry an Opus audio m-line too; nothing is sent until this is on |
+
+### Sound
+
+| | |
+|---|---|
+| `GET /api/v1/audio` | the HDMI audio receiver: on or not, the sample rate, the level, readers, overruns |
+| `GET /api/v1/audio/clip.wav?s=N` | the next N seconds (1..10) as a WAV file |
 
 ### Recording
 
 | | |
 |---|---|
-| `POST /api/v1/record/start`, `/stop`, `GET /api/v1/record/status` | record the screen to VIDEO/ on the card; `?seconds=` for a set length, `?every=` for a timelapse |
+| `POST /api/v1/record/start`, `/stop`, `GET /api/v1/record/status` | record the screen to VIDEO/ on the card; `?seconds=` for a set length, `?every=` for a timelapse. `audio` in the status says whether the recording has sound |
 | `POST /api/v1/record/event` | save a dashcam clip now: the past in memory plus `dashcam_post_s` after |
 | `POST /api/v1/screenshot` | save a screenshot to SCREENSHOTS/ on the card |
 | `GET /api/v1/captures`, `GET /api/v1/captures/file?path=`, `POST /api/v1/captures/delete?path=` | list, download and delete recordings and screenshots |
@@ -147,7 +155,7 @@ What a webhook receives is in [NOTIFICATIONS.md](NOTIFICATIONS.md).
 
 ## WebSockets
 
-Three sockets, all behind the session cookie. All numbers are little-endian.
+Four sockets, all behind the session cookie. All numbers are little-endian.
 The codes are in [`components/kvm_proto/include/kvm_proto.h`](../components/kvm_proto/include/kvm_proto.h),
 a header-only component a client written in C can use as it is.
 
@@ -191,6 +199,19 @@ Every picture frame is a 12-byte header and the payload:
 | 4..5 | height |
 | 6..9 | sequence number, so a client sees what it missed |
 | 10..11 | low 16 bits of the device's milliseconds since boot |
+
+### `/audio`: the target's sound
+
+For a client that gets its picture over `/video`; over WebRTC the sound comes
+with the video. `0x01` subscribes. The device then sends one Opus packet a
+message, 20 ms of 48 kHz stereo:
+
+| Bytes | |
+|---|---|
+| 0 | `0x03` |
+| 1 | 1 on the first packet after a gap, else 0 |
+| 2..5 | timestamp, in 48 kHz samples |
+| 6.. | the Opus packet |
 
 ### `/serial`: the target's serial console
 

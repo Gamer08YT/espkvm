@@ -129,6 +129,7 @@ static esp_err_t tc358743_detect(i2c_master_bus_handle_t bus, kvm_bridge_t *out)
     out->ops = &s_ops;
     out->dev = dev;
     out->knows_ddc5v = true;
+    out->i2s_audio = true;
     return ESP_OK;
 }
 

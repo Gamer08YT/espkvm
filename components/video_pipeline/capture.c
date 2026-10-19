@@ -51,11 +51,12 @@ void capture_status_set_mode(uint32_t hres, uint32_t vres, bool interlaced)
     taskEXIT_CRITICAL(&s_mu);
 }
 
-void capture_status_set_input(uint8_t hz, bool too_fast)
+void capture_status_set_input(uint8_t hz, bool too_fast, uint32_t audio_hz)
 {
     taskENTER_CRITICAL(&s_mu);
     s_status.input_hz = hz;
     s_status.too_fast = too_fast;
+    s_status.audio_hz = audio_hz;
     taskEXIT_CRITICAL(&s_mu);
 }
 
@@ -67,6 +68,7 @@ void capture_status_set_signal(bool present, uint8_t sys_status)
     if (!present) {
         s_status.input_hz = 0;
         s_status.too_fast = false;
+        s_status.audio_hz = 0;
         s_status.fps_x100 = 0;
         s_status.kbps = 0;
         s_status.skipped_fps_x100 = 0;

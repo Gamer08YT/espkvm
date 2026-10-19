@@ -29,6 +29,7 @@
 #include "http_server.h"
 #include "kvm_atx.h"
 #include "kvm_serial.h"
+#include "kvm_audio.h"
 #include "kvm_netlog.h"
 #include "kvm_auth.h"
 #include "kvm_caps.h"
@@ -130,6 +131,9 @@ static void on_setting_changed(const char *key, void *user)
     }
     if (strncmp(key, "ser_", 4) == 0 || strcmp(key, "*") == 0) {
         kvm_serial_apply();
+    }
+    if (strncmp(key, "aud_", 4) == 0 || strcmp(key, "*") == 0) {
+        kvm_audio_apply();
     }
     if (strncmp(key, "nc_", 3) == 0 || strcmp(key, "*") == 0) {
         kvm_netlog_apply();
@@ -275,11 +279,11 @@ static void report_pending_capabilities(void)
     apply_media_selection();
     kvm_atx_apply();
     kvm_serial_apply();
+    kvm_audio_apply();
     kvm_netlog_apply(); /* the socket opens on its own task, once the network is up */
     /* Wake-on-LAN needs only the network, which is up by the time anything can
      * ask for it. */
     kvm_cap_report(KVM_CAP_WOL, true, NULL);
-    kvm_cap_report(KVM_CAP_AUDIO, false, "audio capture not implemented yet");
     kvm_cap_report(KVM_CAP_NET_STATIC, true, NULL);
     /* HTTPS reports itself from the web server, which knows whether the TLS
      * listener actually came up. */
@@ -611,6 +615,9 @@ void app_main(void)
      * pins in report_pending_capabilities(). Not fatal: it is an extra. */
     if (kvm_serial_init() != ESP_OK) {
         ESP_LOGW(TAG, "serial console: no memory for its buffer");
+    }
+    if (kvm_audio_init() != ESP_OK) {
+        ESP_LOGW(TAG, "HDMI audio: no memory for its receiver");
     }
     if (kvm_netlog_init() != ESP_OK) {
         ESP_LOGW(TAG, "netconsole receiver: no memory for its buffer");

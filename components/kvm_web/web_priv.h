@@ -32,6 +32,11 @@ const httpd_uri_t *serial_api_routes(size_t *count);
 esp_transport_handle_t kvm_web_chacha_transport(void);
 /** Download an image from a URL to the card or the rescue partition. See url_fetch.c. */
 const httpd_uri_t *url_fetch_routes(size_t *count);
+/** HDMI audio: the /audio socket, state and a WAV clip. See audio_api.c. */
+const httpd_uri_t *audio_api_routes(size_t *count);
+esp_err_t audio_api_init(void);
+void audio_api_drop(int fd);
+
 /** The target's log over the network (netconsole). See netlog_api.c. */
 const httpd_uri_t *netlog_api_routes(size_t *count);
 /** GET /api/v1/system/pinprobe: how fast some pins switch. See pinprobe_api.c. */

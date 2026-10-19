@@ -10,6 +10,7 @@ idf_component_register(
         "cec_api.c"
         "serial_api.c"
         "netlog_api.c"
+        "audio_api.c"
         "url_fetch.c"
         "pinprobe_api.c"
         "webrtc_api.c"
@@ -42,6 +43,7 @@ idf_component_register(
         kvm_notify
         kvm_cec
         kvm_serial
+        kvm_audio
         kvm_netlog
         kvm_webrtc
         kvm_rtc

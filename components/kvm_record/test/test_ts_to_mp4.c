@@ -56,7 +56,7 @@ static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 1
 /* The first box of @p type inside [p, p+n), searching into containers. */
 static const uint8_t *find(const uint8_t *p, size_t n, const char *type, size_t *len)
 {
-    static const char *const containers[] = {"moov", "trak", "mdia", "minf", "stbl", "udta"};
+    static const char *const containers[] = {"moov", "trak", "mdia", "minf", "stbl", "udta", "edts"};
     size_t i = 0;
     while (i + 8 <= n) {
         const uint32_t sz = be32(p + i);
@@ -67,7 +67,7 @@ static const uint8_t *find(const uint8_t *p, size_t n, const char *type, size_t 
             *len = sz;
             return p + i;
         }
-        for (size_t c = 0; c < 6; c++) {
+        for (size_t c = 0; c < 7; c++) {
             if (!memcmp(p + i + 4, containers[c], 4)) {
                 const uint8_t *r = find(p + i + 8, sz - 8, type, len);
                 if (r) {
@@ -78,6 +78,100 @@ static const uint8_t *find(const uint8_t *p, size_t n, const char *type, size_t 
         i += sz;
     }
     return NULL;
+}
+
+/* An ADTS frame: AAC-LC, 48 kHz, stereo, @p payload bytes after the header. */
+static size_t adts(uint8_t *out, size_t payload, uint8_t fill)
+{
+    const size_t len = 7 + payload;
+    const uint8_t h[7] = {0xff, 0xf1, (1 << 6) | (3 << 2), (uint8_t)((2 << 6) | (len >> 11)),
+                          (uint8_t)(len >> 3), (uint8_t)(((len & 7) << 5) | 0x1f), 0xfc};
+    memcpy(out, h, 7);
+    memset(out + 7, fill, payload);
+    return len;
+}
+
+/*
+ * With sound, the way the recorder writes it: the AAC frames up to a picture's
+ * time go in before it, the first 10 ms after the first picture. The MP4 gets
+ * a second track, the tracks interleaved, each sample where its table says.
+ */
+static void sound(void)
+{
+    ts.len = ts.pos = 0;
+    mp4.len = 0;
+    ts_mux_t m;
+    ts_mux_init(&m, on_packet, NULL);
+    m.audio = true;
+    static const uint8_t idr[] = {0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28, 0xda, 0x01,
+                                  0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 1, 0x65, 0x11, 0x22};
+    static const uint8_t p_frame[] = {0, 0, 1, 0x41, 0x33, 0x44, 0x55};
+    uint64_t next_audio = 900; /* 10 ms */
+    int audio_n = 0;
+    for (int i = 0; i < 20; i++) {
+        const uint64_t t = (uint64_t)i * 3600;
+        while (next_audio <= t) {
+            uint8_t f[400];
+            ts_mux_audio(&m, f, adts(f, 200 + (size_t)audio_n, (uint8_t)audio_n), next_audio);
+            audio_n++;
+            next_audio += 1920;
+        }
+        if (i == 0) {
+            ts_mux_frame(&m, idr, sizeof(idr), t, true);
+        } else {
+            ts_mux_frame(&m, p_frame, sizeof(p_frame), t, false);
+        }
+    }
+    mp4_io_t io = {rd, rw, wr, &ts};
+    char err[128] = "";
+    CHECK(ts_to_mp4(&io, 1280, 720, NULL, 0, err, sizeof(err)));
+    if (err[0]) {
+        printf("  error: %s\n", err);
+    }
+    size_t len;
+    const uint8_t *mvhd = find(mp4.b, mp4.len, "mvhd", &len);
+    CHECK(mvhd && be32(mvhd + 96 + 8) == 3);
+    const uint8_t *mp4a = NULL, *esds = NULL;
+    for (size_t i = 0; i + 4 < mp4.len && !esds; i++) {
+        if (!memcmp(mp4.b + i, "mp4a", 4)) mp4a = mp4.b + i - 4;
+        if (!memcmp(mp4.b + i, "esds", 4)) esds = mp4.b + i - 4;
+    }
+    CHECK(mp4a && be32(mp4a + 32) == 48000u << 16);
+    CHECK(esds && esds[12] == 0x03 && esds[13] == 25 && esds[32] == 0x05 && esds[34] == 0x11 &&
+          esds[35] == 0x90);
+    /* The audio track: the second trak. */
+    const size_t moov_at = be32(mp4.b);
+    const uint8_t *t1 = find(mp4.b, mp4.len, "trak", &len);
+    CHECK(t1 != NULL);
+    if (!t1) {
+        return;
+    }
+    const uint8_t *t2 = t1 + len;
+    const size_t t2len = be32(t2);
+    CHECK(!memcmp(t2 + 4, "trak", 4));
+    const uint8_t *elst = find(t2 + 8, t2len - 8, "elst", &len);
+    CHECK(elst && be32(elst + 12) == 2 && be32(elst + 16) == 10 && be32(elst + 20) == 0xffffffffu);
+    const uint8_t *stts = find(t2 + 8, t2len - 8, "stts", &len);
+    CHECK(stts && be32(stts + 12) == 1 && be32(stts + 16) == (uint32_t)audio_n &&
+          be32(stts + 20) == 1024);
+    const uint8_t *stco = find(t2 + 8, t2len - 8, "stco", &len);
+    const uint8_t *stsz = find(t2 + 8, t2len - 8, "stsz", &len);
+    CHECK(stco && stsz && be32(stco + 12) == (uint32_t)audio_n);
+    for (int k = 0; stco && stsz && k < audio_n; k++) {
+        const uint32_t at = be32(stco + 16 + 4 * k), size = be32(stsz + 20 + 4 * k);
+        CHECK(size == 200u + (uint32_t)k && at + size <= mp4.len);
+        CHECK(mp4.b[at] == (uint8_t)k && mp4.b[at + size - 1] == (uint8_t)k);
+    }
+    /* The pictures' chunks point at their slices. */
+    const uint8_t *vco = find(t1 + 8, be32(t1) - 8, "stco", &len);
+    CHECK(vco && be32(vco + 12) == 20);
+    CHECK(vco && mp4.b[be32(vco + 16) + 4] == 0x65 && mp4.b[be32(vco + 20) + 4] == 0x41);
+    (void)moov_at;
+    FILE *f = fopen(getenv("MP4_OUT") ? getenv("MP4_OUT") : "/dev/null", "wb");
+    if (f) {
+        fwrite(mp4.b, 1, mp4.len, f);
+        fclose(f);
+    }
 }
 
 int main(void)
@@ -154,10 +248,11 @@ int main(void)
     /* The first sample is the IDR slice, length-prefixed, without SPS/PPS/AUD. */
     CHECK(be32(mp4.b + mdat_at + 8) == 100 && mp4.b[mdat_at + 12] == 0x65);
 
+    sound();
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;
     }
-    printf("ts_to_mp4: index first, 50 samples, 5 keyframes, chapters, joined segments - all as expected\n");
+    printf("ts_to_mp4: index first, 50 samples, 5 keyframes, chapters, joined segments, sound - all as expected\n");
     return 0;
 }

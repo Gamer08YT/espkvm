@@ -128,6 +128,7 @@ static void poll_task(void *arg)
             record_stop_segments("the dashcam was switched off", forget);
         }
         card_wanted = want;
+        record_dashcam_audio();
 
         if (!kvm_setting_bool("dashcam")) {
             continue;

@@ -1112,7 +1112,7 @@ static void capture_monitor_task(void *arg)
             }
             c->mode_too_fast = too_fast;
         }
-        capture_status_set_input(t.hz, c->mode_too_fast);
+        capture_status_set_input(t.hz, c->mode_too_fast, t.audio_hz);
 
         const bool mode_differs = (candidate_h != c->hres || candidate_v != c->vres);
         if (!had_signal) {
