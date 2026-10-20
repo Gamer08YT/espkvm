@@ -11,7 +11,7 @@
 #define PID_VIDEO 0x0100
 #define PID_AUDIO 0x0101
 #define STREAM_H264 0x1b
-#define STREAM_AAC_ADTS 0x0f
+#define STREAM_PRIVATE_PES 0x06 /* Opus is one, told apart by its descriptors */
 
 /* The decoder clock runs this far behind the picture times, so every frame
  * arrives before it is due - 700 ms is what most muxers use. */
@@ -71,7 +71,7 @@ static void tables(ts_mux_t *m)
 
     const uint8_t pmt[] = {
         0x02,                   /* table_id: program map */
-        0xb0, m->audio ? 23 : 18,
+        0xb0, m->audio ? 33 : 18,
         0x00, 0x01,             /* program 1 */
         0xc1,
         0x00, 0x00,
@@ -80,11 +80,13 @@ static void tables(ts_mux_t *m)
         STREAM_H264,
         (uint8_t)(0xe0 | (PID_VIDEO >> 8)), (uint8_t)(PID_VIDEO & 0xff),
         0xf0, 0x00,             /* ES_info_length 0 */
-        STREAM_AAC_ADTS,        /* left out without sound */
+        STREAM_PRIVATE_PES,     /* the rest is left out without sound */
         (uint8_t)(0xe0 | (PID_AUDIO >> 8)), (uint8_t)(PID_AUDIO & 0xff),
-        0xf0, 0x00,
+        0xf0, 10,               /* ES_info_length */
+        0x05, 4, 'O', 'p', 'u', 's', /* registration descriptor */
+        0x7f, 2, 0x80, 2,       /* extension descriptor: Opus, 2 channels */
     };
-    psi(m, PID_PMT, &m->cc_pmt, pmt, m->audio ? sizeof(pmt) : sizeof(pmt) - 5);
+    psi(m, PID_PMT, &m->cc_pmt, pmt, m->audio ? sizeof(pmt) : sizeof(pmt) - 15);
 }
 
 void ts_mux_init(ts_mux_t *m, ts_mux_out_t out, void *user)
@@ -212,19 +214,40 @@ void ts_mux_frame(ts_mux_t *m, const uint8_t *data, size_t len, uint64_t pts_90k
     pes_out(m, PID_VIDEO, &m->cc_video, lead, ln, data, len, pcr, keyframe);
 }
 
-void ts_mux_audio(ts_mux_t *m, const uint8_t *adts, size_t len, uint64_t pts_90k)
+void ts_mux_opus(ts_mux_t *m, const uint8_t *packet, size_t len, uint64_t pts_90k)
 {
+    if (len == 0 || len > KVM_TS_OPUS_MAX) {
+        return;
+    }
     const uint64_t pts = (pts_90k + PCR_LEAD_90K) & 0x1ffffffffull;
-    const size_t pes_len = 3 + 5 + len; /* flags, header length, PTS, the frame */
-    const uint8_t lead[14] = {
-        0x00, 0x00, 0x01, 0xc0, /* stream_id: audio */
-        (uint8_t)(pes_len >> 8), (uint8_t)pes_len,
-        0x80, 0x80, 5,
-        (uint8_t)(0x21 | ((pts >> 29) & 0x0e)),
-        (uint8_t)(pts >> 22),
-        (uint8_t)(0x01 | ((pts >> 14) & 0xfe)),
-        (uint8_t)(pts >> 7),
-        (uint8_t)(0x01 | ((pts << 1) & 0xfe)),
-    };
-    pes_out(m, PID_AUDIO, &m->cc_audio, lead, sizeof(lead), adts, len, 0, false);
+    /* The packet is preceded by its control header: a 0x3ff prefix, no trim,
+     * and its size as a run of 255s and the rest. */
+    const size_t size_bytes = len / 255 + 1;
+    const size_t pes_len = 3 + 5 + 2 + size_bytes + len;
+    uint8_t lead[14 + 2 + KVM_TS_OPUS_SIZE_BYTES];
+    size_t ln = 0;
+    lead[ln++] = 0x00;
+    lead[ln++] = 0x00;
+    lead[ln++] = 0x01;
+    lead[ln++] = 0xbd; /* stream_id: private stream 1 */
+    lead[ln++] = (uint8_t)(pes_len >> 8);
+    lead[ln++] = (uint8_t)pes_len;
+    lead[ln++] = 0x80;
+    lead[ln++] = 0x80; /* PTS only */
+    lead[ln++] = 5;
+    lead[ln++] = (uint8_t)(0x21 | ((pts >> 29) & 0x0e));
+    lead[ln++] = (uint8_t)(pts >> 22);
+    lead[ln++] = (uint8_t)(0x01 | ((pts >> 14) & 0xfe));
+    lead[ln++] = (uint8_t)(pts >> 7);
+    lead[ln++] = (uint8_t)(0x01 | ((pts << 1) & 0xfe));
+    lead[ln++] = 0x7f;
+    lead[ln++] = 0xe0;
+    for (size_t left = len; ; left -= 255) {
+        if (left < 255) {
+            lead[ln++] = (uint8_t)left;
+            break;
+        }
+        lead[ln++] = 0xff;
+    }
+    pes_out(m, PID_AUDIO, &m->cc_audio, lead, ln, packet, len, 0, false);
 }

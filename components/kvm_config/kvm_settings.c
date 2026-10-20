@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "kvm_board_header.h"
@@ -40,6 +41,8 @@ static value_t *s_values;
 static SemaphoreHandle_t s_mu;
 static subscriber_t s_subs[MAX_SUBSCRIBERS];
 static uint8_t s_sub_count;
+/* This install's random id, read or made on first use; a reset forgets it. */
+static char s_install_id[KVM_INSTALL_ID_LEN + 1];
 
 static void lock(void)
 {
@@ -305,6 +308,34 @@ esp_err_t kvm_setting_set_str(const char *key, const char *value)
     return err;
 }
 
+/* Not a setting: an export must not carry it to another device. */
+#define INSTALL_ID_KEY "install_id"
+
+void kvm_install_id(char out[KVM_INSTALL_ID_LEN + 1])
+{
+    lock();
+    if (!s_install_id[0]) {
+        nvs_handle_t nvs;
+        size_t len = sizeof(s_install_id);
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+            if (nvs_get_str(nvs, INSTALL_ID_KEY, s_install_id, &len) != ESP_OK ||
+                strlen(s_install_id) != KVM_INSTALL_ID_LEN) {
+                uint8_t raw[KVM_INSTALL_ID_LEN / 2];
+                esp_fill_random(raw, sizeof(raw));
+                for (size_t i = 0; i < sizeof(raw); i++) {
+                    snprintf(&s_install_id[i * 2], 3, "%02x", raw[i]);
+                }
+                if (nvs_set_str(nvs, INSTALL_ID_KEY, s_install_id) == ESP_OK) {
+                    nvs_commit(nvs);
+                }
+            }
+            nvs_close(nvs);
+        }
+    }
+    strlcpy(out, s_install_id, KVM_INSTALL_ID_LEN + 1);
+    unlock();
+}
+
 esp_err_t kvm_settings_reset(void)
 {
     ESP_RETURN_ON_FALSE(s_values, ESP_ERR_INVALID_STATE, TAG, "not initialised");
@@ -320,6 +351,7 @@ esp_err_t kvm_settings_reset(void)
     }
 
     lock();
+    s_install_id[0] = '\0';
     for (size_t i = 0; i < s_count; i++) {
         const kvm_setting_t *d = &s_table[i];
         if (is_numeric(d)) {

@@ -107,6 +107,11 @@ installed from the console itself. Checking for them is **off by default**:
 turn on **Settings -> System -> Updates -> Offer firmware updates**, and the
 console tells you when a newer build is out and installs it in one click. Your
 browser asks, not the device, so the device still never reaches the internet.
+With the check on, the browser also tells check.espkvm.io once a day a random id
+of the device (not taken from the hardware; a settings reset makes a new one),
+its board and its version. That is how I count the devices in use. Nothing else
+is sent. The code that counts them is in
+[espkvm/check](https://github.com/espkvm/check).
 
 ## Reaching it from outside: Tailscale or WireGuard
 

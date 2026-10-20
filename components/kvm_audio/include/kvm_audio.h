@@ -83,64 +83,51 @@ void kvm_audio_close(kvm_audio_reader_t *r);
 void kvm_audio_status(kvm_audio_status_t *out);
 
 /*
- * The same sound as Opus, for the browser: 20 ms packets, 48 kHz stereo,
- * whatever rate the source plays. One encoder serves every reader and runs
- * only while there is one.
+ * The same sound as Opus: 20 ms packets, 48 kHz stereo, whatever rate the
+ * source plays. One encoder serves the browser's readers and the recorder,
+ * and runs only while one of them is open.
+ *
+ * The stream never stops: no sound, a gap, or a source clock a little off is
+ * made up with silence or trimmed, so packet n starts n * 20 ms after the
+ * first and stays within 20 ms of the time its sound was captured. A browser
+ * reader gets only the packets made from sound; the recorder gets them all.
  */
 
+#define KVM_OPUS_BITRATE 96000
 /** Room for one packet; at the bitrate used one is about 240 bytes. */
 #define KVM_OPUS_MAX 600
 #define KVM_OPUS_FRAMES 960 /* 20 ms at 48 kHz */
+#define KVM_OPUS_RATE 48000
 
 typedef struct {
     int64_t start_us;  /**< esp_timer time of the first sample */
-    /** 48 kHz sample count: advances by KVM_OPUS_FRAMES a packet, and jumps
-     * after a gap so it keeps following start_us. */
+    /** 48 kHz sample count: advances by KVM_OPUS_FRAMES a packet. */
     uint32_t ts;
-    bool resync;       /**< first packet after a gap */
+    bool resync;       /**< a browser reader's first packet after a gap or silence */
     uint16_t len;
     uint8_t data[KVM_OPUS_MAX];
 } kvm_opus_packet_t;
 
 typedef struct kvm_opus_reader kvm_opus_reader_t;
 
-/** Like kvm_audio_open, with @p depth 20 ms packets. */
+/** A browser reader, like kvm_audio_open, with @p depth 20 ms packets. */
 esp_err_t kvm_opus_open(uint16_t depth, kvm_opus_reader_t **out);
 esp_err_t kvm_opus_read(kvm_opus_reader_t *r, kvm_opus_packet_t *pkt, uint32_t timeout_ms);
 void kvm_opus_close(kvm_opus_reader_t *r);
 
-/*
- * The same sound as AAC-LC, for recordings: 48 kHz mono, 1024 frames
- * (21.3 ms) a frame, each with its ADTS header. Unlike Opus it never stops:
- * no sound, a gap, or a source clock a little off is made up with silence or
- * trimmed, so frame n starts n * 1024 / 48000 s after the first and stays
- * within 20 ms of the time its sound was captured. The frames wait for the
- * reader in PSRAM; when that is full the oldest go. One reader at a time; the
- * encoder runs while it is open.
- */
-#define KVM_AAC_FRAMES 1024
-#define KVM_AAC_RATE 48000
-/** Room for one ADTS frame; at the bitrate used one is about 170 bytes. */
-#define KVM_AAC_MAX 1600
-
-typedef struct {
-    int64_t start_us; /**< esp_timer time of the first sample */
-    uint16_t len;
-    uint8_t data[KVM_AAC_MAX];
-} kvm_aac_frame_t;
-
-typedef struct kvm_aac kvm_aac_t;
+typedef struct kvm_opus_rec kvm_opus_rec_t;
 
 /**
- * @p keep_s: the frames waiting are kept for at least this many seconds, and
- * never less than about 8. ESP_ERR_INVALID_STATE when audio is off or the
- * encoder is taken.
+ * The recorder's reader: every packet, silence included. They wait in PSRAM;
+ * @p keep_s says for how many seconds at least (never less than about 8), and
+ * when that is full the oldest go. One at a time: ESP_ERR_INVALID_STATE when
+ * audio is off or it is taken.
  */
-esp_err_t kvm_aac_open(uint32_t keep_s, kvm_aac_t **out);
-esp_err_t kvm_aac_read(kvm_aac_t *a, kvm_aac_frame_t *f, uint32_t timeout_ms);
-/** Frames that went unread: the oldest, pushed out when the reader fell behind. */
-uint32_t kvm_aac_dropped(const kvm_aac_t *a);
-void kvm_aac_close(kvm_aac_t *a);
+esp_err_t kvm_opus_rec_open(uint32_t keep_s, kvm_opus_rec_t **out);
+esp_err_t kvm_opus_rec_read(kvm_opus_rec_t *rec, kvm_opus_packet_t *pkt, uint32_t timeout_ms);
+/** Packets that went unread: the oldest, pushed out when the reader fell behind. */
+uint32_t kvm_opus_rec_dropped(const kvm_opus_rec_t *rec);
+void kvm_opus_rec_close(kvm_opus_rec_t *rec);
 
 #ifdef __cplusplus
 }

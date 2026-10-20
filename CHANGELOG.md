@@ -5,7 +5,36 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
-## [Unreleased]
+## [0.68.0] - 2026-10-20
+
+### Added
+- A pointer stick in touch mode. Turn on Stick in the touch controls, and a
+  drag works as a stick: it appears where the finger lands, and the pointer
+  keeps moving while the finger is held off it. Works with a mouse too.
+  Taps, long press and two-finger gestures stay as they were.
+- A game controller as a mouse. With a controller plugged into the computer
+  you watch from, a new button under the picture turns it on: the left stick
+  moves the pointer, the right one scrolls, the face buttons click, the cross
+  sends the arrows. Both are off until you turn them on.
+
+### Changed
+- With **Offer firmware updates** on, the console now also tells
+  check.espkvm.io once a day a random id of the device, its board and its
+  version, so I can see how many devices are in use. The id is not taken from
+  the hardware, and a settings reset makes a new one. Only the project's own
+  update address counts; the device itself still sends nothing.
+- Recordings get their sound as Opus, from the same encoder the console
+  listens to, instead of AAC from a second one. With both on, the two
+  encoders took nearly both cores and cost the picture a few frames a
+  second. The sound in recordings is now stereo. MP4 clips carry Opus too.
+  Older recordings with AAC still play in the console and still convert.
+
+### Fixed
+- **Find this screen** got it wrong about half the time. A slow picture made
+  it pin the cursor to the step before, a button lit up under the pointer
+  shifted it, and a clock on the screen counted as a move. Now each step
+  waits for its own move, and the cursor is told apart by a nudge of a few
+  pixels: between those two pictures only the cursor changes.
 
 ## [0.67.0] - 2026-10-19
 

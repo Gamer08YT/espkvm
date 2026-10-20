@@ -5,7 +5,7 @@
  * The muxer's output parsed back: every packet well-formed, counters
  * continuous, the tables' CRCs right, and each frame coming out of its PES
  * byte for byte with the time it went in with. Then the same with sound: an
- * audio stream in the table, and AAC frames between the pictures.
+ * Opus stream in the table, and its packets between the pictures.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,7 +105,9 @@ static void parse(void)
             CHECK(crc32_mpeg(p + s, 3 + sl) == 0, "table CRC on pid %d", pid);
             if (pid == 0x1000) {
                 CHECK(p[s + 12] == 0x1b, "stream type %02x", p[s + 12]);
-                table_has_audio = sl == 23 && p[s + 17] == 0x0f && p[s + 18] == 0xe1 && p[s + 19] == 0x01;
+                static const uint8_t opus_es[] = {0x06, 0xe1, 0x01, 0xf0, 10,  0x05, 4,
+                                                  'O',  'p',  'u',  's',  0x7f, 2,    0x80, 2};
+                table_has_audio = sl == 33 && memcmp(p + s + 17, opus_es, sizeof(opus_es)) == 0;
             }
             tables++;
             continue;
@@ -117,7 +119,7 @@ static void parse(void)
                 memset(cur_audio, 0, sizeof(*cur_audio));
                 CHECK(!have_pcr, "audio with a PCR");
                 const uint8_t *h = p + at;
-                CHECK(h[0] == 0 && h[1] == 0 && h[2] == 1 && h[3] == 0xc0, "audio PES start code");
+                CHECK(h[0] == 0 && h[1] == 0 && h[2] == 1 && h[3] == 0xbd, "audio PES start code");
                 CHECK((h[7] & 0xc0) == 0x80 && h[8] == 5, "audio PTS flags");
                 cur_audio->pts = ((uint64_t)(h[9] & 0x0e) << 29) | ((uint64_t)h[10] << 22) |
                                  ((uint64_t)(h[11] & 0xfe) << 14) | ((uint64_t)h[12] << 7) | (h[13] >> 1);
@@ -198,12 +200,13 @@ int main(void)
     CHECK(!table_has_audio, "an audio stream in a recording without sound");
     const size_t video_packets = stream_len / TS_PACKET;
 
-    /* With sound: a frame of AAC after each picture, sizes over the same edges. */
+    /* With sound: an Opus packet after each picture, sizes over the same edges
+     * and over the 255 steps of the size field in front of it. */
     stream_len = 0;
     got_n = 0;
     ts_mux_init(&m, collect, NULL);
     m.audio = true;
-    const size_t asizes[] = {7, 169, 170, 171, 183, 184, 185, 360, 700, 1543};
+    const size_t asizes[] = {7, 169, 170, 171, 183, 184, 185, 254, 255, 360, 700, 1275};
     const int an = (int)(sizeof(asizes) / sizeof(asizes[0]));
     uint8_t *afr[16];
     for (int i = 0; i < an; i++) {
@@ -212,18 +215,27 @@ int main(void)
         for (size_t k = 0; k < asizes[i]; k++) {
             afr[i][k] = (uint8_t)(k * 13 + i);
         }
-        ts_mux_audio(&m, afr[i], asizes[i], (uint64_t)i * 1920);
+        ts_mux_opus(&m, afr[i], asizes[i], (uint64_t)i * 1800);
     }
     parse();
     CHECK(table_has_audio, "no audio stream in the table");
     CHECK(got_n == an, "pictures out %d, in %d", got_n, an);
     CHECK(got_audio_n == an, "audio frames out %d, in %d", got_audio_n, an);
     for (int i = 0; i < got_audio_n && i < an; i++) {
-        CHECK(got_audio[i].pts == (uint64_t)i * 1920 + 63000, "audio %d PTS", i);
-        CHECK(got_audio[i].pcr == asizes[i] + 8, "audio %d PES length", i);
-        CHECK(got_audio[i].len == asizes[i], "audio %d length %zu, want %zu", i, got_audio[i].len, asizes[i]);
-        if (got_audio[i].len == asizes[i]) {
-            CHECK(memcmp(got_audio[i].data, afr[i], asizes[i]) == 0, "audio %d bytes", i);
+        const uint8_t *d = got_audio[i].data;
+        const size_t hl = 2 + asizes[i] / 255 + 1; /* control header: prefix and size */
+        CHECK(got_audio[i].pts == (uint64_t)i * 1800 + 63000, "audio %d PTS", i);
+        CHECK(got_audio[i].pcr == asizes[i] + 8 + hl, "audio %d PES length", i);
+        CHECK(got_audio[i].len == asizes[i] + hl, "audio %d length %zu, want %zu", i, got_audio[i].len,
+              asizes[i] + hl);
+        if (got_audio[i].len == asizes[i] + hl) {
+            size_t size = 0;
+            for (size_t k = 2; k < hl; k++) {
+                size += d[k];
+            }
+            CHECK(d[0] == 0x7f && d[1] == 0xe0, "audio %d control header %02x %02x", i, d[0], d[1]);
+            CHECK(size == asizes[i], "audio %d size field %zu", i, size);
+            CHECK(memcmp(d + hl, afr[i], asizes[i]) == 0, "audio %d bytes", i);
         }
     }
     if (failures) {

@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 ESP-KVM contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * H.264, and AAC when the recording has sound, into an MPEG transport stream.
+ * H.264, and Opus when the recording has sound, into an MPEG transport stream.
  *
  * A recording is written as .ts rather than .mp4 because an MP4 keeps its index
  * at the end: pull the card or lose power and the file does not open. A
@@ -46,8 +46,16 @@ void ts_mux_init(ts_mux_t *m, ts_mux_out_t out, void *user);
  */
 void ts_mux_frame(ts_mux_t *m, const uint8_t *data, size_t len, uint64_t pts_90k, bool keyframe);
 
-/** One AAC frame with its ADTS header, at @p pts_90k on the video's clock. */
-void ts_mux_audio(ts_mux_t *m, const uint8_t *adts, size_t len, uint64_t pts_90k);
+/** Longest Opus packet, for the size field in front of it. */
+#define KVM_TS_OPUS_MAX 1275
+#define KVM_TS_OPUS_SIZE_BYTES (KVM_TS_OPUS_MAX / 255 + 1)
+
+/**
+ * One Opus packet (48 kHz, stereo) at @p pts_90k on the video's clock: the
+ * mapping ffmpeg and VLC read - a private PES stream marked 'Opus', each
+ * packet behind its control header. At most KVM_TS_OPUS_MAX bytes.
+ */
+void ts_mux_opus(ts_mux_t *m, const uint8_t *packet, size_t len, uint64_t pts_90k);
 
 #ifdef __cplusplus
 }

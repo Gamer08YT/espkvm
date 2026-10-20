@@ -113,10 +113,12 @@ pulses until then.
 Opus at its lowest complexity takes about 7 ms of each 20 ms on one core. It
 runs below the video, so the picture keeps its frame rate with the sound on.
 
-A recording gets the sound too, as AAC (48 kHz mono, 64 kbit/s) next to the
-picture in the .ts, and a dashcam clip has it in its MP4. The dashcam in
-memory keeps the encoder running and holds the last two minutes of sound,
-about 1.3 MB of PSRAM, so a clip's past has sound too. Where the source
+A recording gets the sound too: the same encoder serves the console and the
+recorder, so the .ts carries the same Opus packets (48 kHz stereo, 96 kbit/s)
+next to the picture, and a dashcam clip has them in its MP4. Recordings made
+before 0.68 carry AAC; the console's player and the MP4 conversion read both.
+The dashcam in memory keeps the encoder running and holds the last two
+minutes of sound, about 2 MB of PSRAM, so a clip's past has sound too. Where the source
 sends no sound the track holds silence, so picture and sound stay in step. A
 timelapse has none. `GET /api/v1/audio/clip.wav?s=5` hands a script the next
 five seconds.

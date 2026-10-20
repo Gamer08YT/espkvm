@@ -90,6 +90,15 @@ const char *kvm_setting_str(const char *key);
 esp_err_t kvm_setting_set_int(const char *key, int32_t value);
 esp_err_t kvm_setting_set_str(const char *key, const char *value);
 
+#define KVM_INSTALL_ID_LEN 32
+
+/**
+ * This install's id: 128 random bits as hex, made on first use and kept in NVS.
+ * Not derived from the hardware; a settings reset makes a new one. The console
+ * sends it with the update check so devices in use can be counted.
+ */
+void kvm_install_id(char out[KVM_INSTALL_ID_LEN + 1]);
+
 /** Restore every setting to its declared default and erase the NVS namespace. */
 esp_err_t kvm_settings_reset(void);
 

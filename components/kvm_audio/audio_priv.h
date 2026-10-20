@@ -14,7 +14,7 @@
 /** Called once from kvm_audio_init. */
 esp_err_t opus_init(void);
 
-/* Both encoders take 48 kHz, whatever the source plays. */
+/* The encoder takes 48 kHz, whatever the source plays. */
 #define OUT_RATE 48000u
 /* A 5 ms block is rate / 200 frames at any rate, so 240 at 48 kHz; one more
    for the rounding. */

@@ -4,8 +4,9 @@
 #
 # Three kinds of thing live here: the C that is plain enough to run on a host -
 # reading a screen, deciding a screen has gone flat, and refusing two settings
-# on one pin; the console's own logic, run by node's test runner; and the paste
-# tables, which are checked against the real keyboard layouts.
+# on one pin; the console's own logic, run by node's test runner; the paste
+# tables, which are checked against the real keyboard layouts; and the Worker
+# behind check.espkvm.io, against node's own SQLite.
 #
 # The firmware itself is not built here - that needs ESP-IDF and takes minutes.
 # Run this before you push and CI will rarely tell you anything you did not

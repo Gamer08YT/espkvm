@@ -905,6 +905,9 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
         snprintf(board_temp, sizeof(board_temp), "%.2f", (double)bt);
     }
 
+    char install_id[KVM_INSTALL_ID_LEN + 1];
+    kvm_install_id(install_id);
+
     char body[3072];
     int n = snprintf(body, sizeof(body),
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
@@ -925,7 +928,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"keyExpiry\":%lld,\"keyExpired\":%s},"
                      "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},\"usbPad\":\"%s\","
                      "\"coproc\":%s,\"rtc\":%s,\"rtcChip\":\"%s\",\"boardTempC\":%s,"
-                     "\"crashDumpBytes\":%u}",
+                     "\"crashDumpBytes\":%u,\"installId\":\"%s\"}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
                      app->idf_ver,
                      running ? running->label : "?", next ? "true" : "false", ota_json,
@@ -950,7 +953,8 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      (int)kvm_setting_int("jiggle_s"),
                      (unsigned)usb_hid_jiggler_nudges(), usb_hid_pad_kind(),
                      coproc_json,
-                     kvm_rtc_present() ? "true" : "false", kvm_rtc_name(), board_temp, dump_bytes);
+                     kvm_rtc_present() ? "true" : "false", kvm_rtc_name(), board_temp, dump_bytes,
+                     install_id);
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "system info too long");
     }

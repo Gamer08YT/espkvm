@@ -131,16 +131,16 @@ static int64_t s_every_us;  /* 0 = an ordinary recording */
 static int64_t s_due_us;    /* the next keyframe at or after this goes in */
 static uint32_t s_tl_frame; /* frames written into this part */
 static char s_limit_why[64];
-/* The target's sound, when audio is on: the AAC frames up to a picture's time
+/* The target's sound, when audio is on: the Opus packets up to a picture's time
  * go in just before it. A timelapse has none. The dashcam in memory keeps the
  * encoder running, and its past in the encoder's buffer, between clips.
- * s_aac_mu guards opening and closing it. */
+ * s_snd_mu guards opening and closing it. */
 #define DASHCAM_AUDIO_S 120
-static SemaphoreHandle_t s_aac_mu;
-static kvm_aac_t *s_aac;
-static kvm_aac_frame_t *s_aac_frame; /* read, not written yet when s_aac_held */
-static bool s_aac_held;
-static bool s_aac_dashcam;  /* opened for the dashcam, with its minutes of past */
+static SemaphoreHandle_t s_snd_mu;
+static kvm_opus_rec_t *s_snd;
+static kvm_opus_packet_t *s_snd_pkt; /* read, not written yet when s_snd_held */
+static bool s_snd_held;
+static bool s_snd_dashcam;  /* opened for the dashcam, with its minutes of past */
 static bool s_writer_audio; /* the writer runs and closes the encoder when done */
 static bool s_rec_audio;    /* this recording has sound */
 
@@ -1108,85 +1108,85 @@ static void close_file(void)
 }
 
 /*
- * The AAC frames that start up to @p until_us, at their times in this file;
+ * The Opus packets that start up to @p until_us, at their times in this file;
  * any from before its first picture are left out. Waits up to @p wait_ms for
  * the encoder to get that far: where a file ends, its sound has to be in.
  */
 static void write_audio(ts_mux_t *mux, int64_t until_us, uint32_t wait_ms)
 {
     while (s_rec_audio) {
-        if (!s_aac_held) {
-            if (kvm_aac_read(s_aac, s_aac_frame, wait_ms) != ESP_OK) {
+        if (!s_snd_held) {
+            if (kvm_opus_rec_read(s_snd, s_snd_pkt, wait_ms) != ESP_OK) {
                 return;
             }
-            s_aac_held = true;
+            s_snd_held = true;
         }
-        if (s_aac_frame->start_us > until_us) {
+        if (s_snd_pkt->start_us > until_us) {
             return;
         }
-        s_aac_held = false;
-        if (s_aac_frame->start_us >= s_part_t0_us) {
-            ts_mux_audio(mux, s_aac_frame->data, s_aac_frame->len,
-                         (uint64_t)(s_aac_frame->start_us - s_part_t0_us) * 9u / 100u);
+        s_snd_held = false;
+        if (s_snd_pkt->start_us >= s_part_t0_us) {
+            ts_mux_opus(mux, s_snd_pkt->data, s_snd_pkt->len,
+                        (uint64_t)(s_snd_pkt->start_us - s_part_t0_us) * 9u / 100u);
         }
     }
 }
 
-/* Both under s_aac_mu. */
+/* Both under s_snd_mu. */
 static void open_audio(bool dashcam)
 {
-    if (kvm_aac_open(dashcam ? DASHCAM_AUDIO_S : 0, &s_aac) != ESP_OK) {
+    if (kvm_opus_rec_open(dashcam ? DASHCAM_AUDIO_S : 0, &s_snd) != ESP_OK) {
         return;
     }
-    s_aac_frame = heap_caps_malloc(sizeof(*s_aac_frame), MALLOC_CAP_SPIRAM);
-    if (!s_aac_frame) {
-        kvm_aac_close(s_aac);
-        s_aac = NULL;
+    s_snd_pkt = heap_caps_malloc(sizeof(*s_snd_pkt), MALLOC_CAP_SPIRAM);
+    if (!s_snd_pkt) {
+        kvm_opus_rec_close(s_snd);
+        s_snd = NULL;
         return;
     }
-    s_aac_dashcam = dashcam;
+    s_snd_dashcam = dashcam;
 }
 
 static void close_audio(void)
 {
-    if (s_aac && !s_aac_dashcam) {
-        ESP_LOGI(TAG, "sound: %u AAC frames lost", (unsigned)kvm_aac_dropped(s_aac));
+    if (s_snd && !s_snd_dashcam) {
+        ESP_LOGI(TAG, "sound: %u Opus packets lost", (unsigned)kvm_opus_rec_dropped(s_snd));
     }
-    kvm_aac_close(s_aac);
-    s_aac = NULL;
-    heap_caps_free(s_aac_frame);
-    s_aac_frame = NULL;
-    s_aac_held = false;
-    s_aac_dashcam = false;
+    kvm_opus_rec_close(s_snd);
+    s_snd = NULL;
+    heap_caps_free(s_snd_pkt);
+    s_snd_pkt = NULL;
+    s_snd_held = false;
+    s_snd_dashcam = false;
 }
 
 /* The writer is done with the sound: keep the dashcam's encoder, close the rest. */
 static void writer_audio_done(void)
 {
-    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
+    xSemaphoreTake(s_snd_mu, portMAX_DELAY);
     s_writer_audio = false;
     s_rec_audio = false;
-    if (!(s_dashcam && s_aac_dashcam)) {
+    if (!(s_dashcam && s_snd_dashcam)) {
         close_audio();
     }
-    xSemaphoreGive(s_aac_mu);
+    xSemaphoreGive(s_snd_mu);
 }
 
 void record_dashcam_audio(void)
 {
-    if (!s_aac_mu) {
+    if (!s_snd_mu) {
         return;
     }
     kvm_audio_status_t a;
     kvm_audio_status(&a);
     const bool want = s_dashcam && a.enabled;
-    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
-    if (want && !s_aac) {
+    xSemaphoreTake(s_snd_mu, portMAX_DELAY);
+    if (want && !s_snd) {
         open_audio(true);
-    } else if (!want && s_aac && !s_writer_audio) {
+    } else if (!want && s_snd && !s_writer_audio) {
         close_audio();
     }
-    xSemaphoreGive(s_aac_mu);
+    xSemaphoreGive(s_snd_mu);
 }
 
 static void writer_task(void *arg)
@@ -1435,7 +1435,7 @@ void kvm_record_init(void)
         s_ring_mu = xSemaphoreCreateMutex();
         s_ring_ready = xSemaphoreCreateBinary();
         s_keylog_mu = xSemaphoreCreateMutex();
-        s_aac_mu = xSemaphoreCreateMutex();
+        s_snd_mu = xSemaphoreCreateMutex();
     }
     kvm_storage_set_fs_leaving_cb(on_card_leaving);
     capture_set_memory_pressure_cb(on_memory_pressure);
@@ -1545,13 +1545,13 @@ static esp_err_t start(uint32_t max_seconds, const char *event_title, uint32_t p
 
     /* Sound when audio is on and working; without it the recording goes on
      * silent. A clip takes the dashcam's encoder with the past it holds. */
-    xSemaphoreTake(s_aac_mu, portMAX_DELAY);
-    if (!every_s && !s_aac) {
+    xSemaphoreTake(s_snd_mu, portMAX_DELAY);
+    if (!every_s && !s_snd) {
         open_audio(false);
     }
-    s_rec_audio = !every_s && s_aac;
+    s_rec_audio = !every_s && s_snd;
     s_writer_audio = true;
-    xSemaphoreGive(s_aac_mu);
+    xSemaphoreGive(s_snd_mu);
 
     const int64_t now = esp_timer_get_time();
     xSemaphoreTake(s_ring_mu, portMAX_DELAY);

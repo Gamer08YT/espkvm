@@ -92,29 +92,68 @@ static size_t adts(uint8_t *out, size_t payload, uint8_t fill)
 }
 
 /*
- * With sound, the way the recorder writes it: the AAC frames up to a picture's
- * time go in before it, the first 10 ms after the first picture. The MP4 gets
- * a second track, the tracks interleaved, each sample where its table says.
+ * An AAC frame the way recordings before 0.68 carry it: a PES of its own on
+ * the audio PID, here always short enough for one transport packet.
  */
-static void sound(void)
+static void old_aac(const uint8_t *adts_frame, size_t len, uint64_t pts_90k)
+{
+    static uint8_t cc;
+    const uint64_t pts = pts_90k + 63000;
+    uint8_t pkt[TS_PACKET];
+    const size_t pes_len = 3 + 5 + len;
+    const size_t payload = 14 + len;
+    const size_t af = TS_PACKET - 4 - payload; /* the stuffing, its length byte included */
+    pkt[0] = 0x47;
+    pkt[1] = 0x41;
+    pkt[2] = 0x01;
+    pkt[3] = (uint8_t)(0x30 | (cc++ & 0x0f));
+    pkt[4] = (uint8_t)(af - 1);
+    if (af > 1) {
+        pkt[5] = 0;
+        memset(pkt + 6, 0xff, af - 2);
+    }
+    uint8_t *h = pkt + 4 + af;
+    const uint8_t lead[14] = {0, 0, 1, 0xc0, (uint8_t)(pes_len >> 8), (uint8_t)pes_len, 0x80, 0x80, 5,
+                              (uint8_t)(0x21 | ((pts >> 29) & 0x0e)), (uint8_t)(pts >> 22),
+                              (uint8_t)(0x01 | ((pts >> 14) & 0xfe)), (uint8_t)(pts >> 7),
+                              (uint8_t)(0x01 | ((pts << 1) & 0xfe))};
+    memcpy(h, lead, 14);
+    memcpy(h + 14, adts_frame, len);
+    mem_put(&ts, pkt, TS_PACKET);
+}
+
+/*
+ * With sound, the way the recorder writes it: the sound frames up to a
+ * picture's time go in before it, the first 10 ms after the first picture.
+ * The MP4 gets a second track, the tracks interleaved, each sample where its
+ * table says. Opus now; AAC as older recordings have it.
+ */
+static void sound(bool opus)
 {
     ts.len = ts.pos = 0;
     mp4.len = 0;
     ts_mux_t m;
     ts_mux_init(&m, on_packet, NULL);
-    m.audio = true;
+    m.audio = opus;
     static const uint8_t idr[] = {0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28, 0xda, 0x01,
                                   0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80, 0, 0, 1, 0x65, 0x11, 0x22};
     static const uint8_t p_frame[] = {0, 0, 1, 0x41, 0x33, 0x44, 0x55};
+    const uint64_t step = opus ? 1800 : 1920; /* 20 ms, or 1024 frames at 48 kHz */
+    const size_t base = opus ? 200 : 100;
     uint64_t next_audio = 900; /* 10 ms */
     int audio_n = 0;
     for (int i = 0; i < 20; i++) {
         const uint64_t t = (uint64_t)i * 3600;
         while (next_audio <= t) {
             uint8_t f[400];
-            ts_mux_audio(&m, f, adts(f, 200 + (size_t)audio_n, (uint8_t)audio_n), next_audio);
+            if (opus) {
+                memset(f, audio_n, base + (size_t)audio_n);
+                ts_mux_opus(&m, f, base + (size_t)audio_n, next_audio);
+            } else {
+                old_aac(f, adts(f, base + (size_t)audio_n, (uint8_t)audio_n), next_audio);
+            }
             audio_n++;
-            next_audio += 1920;
+            next_audio += step;
         }
         if (i == 0) {
             ts_mux_frame(&m, idr, sizeof(idr), t, true);
@@ -131,16 +170,21 @@ static void sound(void)
     size_t len;
     const uint8_t *mvhd = find(mp4.b, mp4.len, "mvhd", &len);
     CHECK(mvhd && be32(mvhd + 96 + 8) == 3);
-    const uint8_t *mp4a = NULL, *esds = NULL;
-    for (size_t i = 0; i + 4 < mp4.len && !esds; i++) {
-        if (!memcmp(mp4.b + i, "mp4a", 4)) mp4a = mp4.b + i - 4;
-        if (!memcmp(mp4.b + i, "esds", 4)) esds = mp4.b + i - 4;
+    const uint8_t *entry = NULL, *conf = NULL;
+    for (size_t i = 4; i + 4 < mp4.len && !conf; i++) {
+        if (!memcmp(mp4.b + i, opus ? "Opus" : "mp4a", 4)) entry = mp4.b + i - 4;
+        if (!memcmp(mp4.b + i, opus ? "dOps" : "esds", 4)) conf = mp4.b + i - 4;
     }
-    CHECK(mp4a && be32(mp4a + 32) == 48000u << 16);
-    CHECK(esds && esds[12] == 0x03 && esds[13] == 25 && esds[32] == 0x05 && esds[34] == 0x11 &&
-          esds[35] == 0x90);
+    CHECK(entry && be32(entry + 32) == 48000u << 16 && entry[25] == 2);
+    if (opus) {
+        /* version 0, 2 channels, pre-skip 312, 48 kHz, gain 0, family 0 */
+        static const uint8_t dops[] = {0, 2, 0x01, 0x38, 0, 0, 0xbb, 0x80, 0, 0, 0};
+        CHECK(conf && be32(conf) == 8 + sizeof(dops) && !memcmp(conf + 8, dops, sizeof(dops)));
+    } else {
+        CHECK(conf && conf[12] == 0x03 && conf[13] == 25 && conf[32] == 0x05 && conf[34] == 0x11 &&
+              conf[35] == 0x90);
+    }
     /* The audio track: the second trak. */
-    const size_t moov_at = be32(mp4.b);
     const uint8_t *t1 = find(mp4.b, mp4.len, "trak", &len);
     CHECK(t1 != NULL);
     if (!t1) {
@@ -153,21 +197,21 @@ static void sound(void)
     CHECK(elst && be32(elst + 12) == 2 && be32(elst + 16) == 10 && be32(elst + 20) == 0xffffffffu);
     const uint8_t *stts = find(t2 + 8, t2len - 8, "stts", &len);
     CHECK(stts && be32(stts + 12) == 1 && be32(stts + 16) == (uint32_t)audio_n &&
-          be32(stts + 20) == 1024);
+          be32(stts + 20) == (opus ? 960u : 1024u));
     const uint8_t *stco = find(t2 + 8, t2len - 8, "stco", &len);
     const uint8_t *stsz = find(t2 + 8, t2len - 8, "stsz", &len);
     CHECK(stco && stsz && be32(stco + 12) == (uint32_t)audio_n);
     for (int k = 0; stco && stsz && k < audio_n; k++) {
         const uint32_t at = be32(stco + 16 + 4 * k), size = be32(stsz + 20 + 4 * k);
-        CHECK(size == 200u + (uint32_t)k && at + size <= mp4.len);
+        CHECK(size == base + (uint32_t)k && at + size <= mp4.len);
         CHECK(mp4.b[at] == (uint8_t)k && mp4.b[at + size - 1] == (uint8_t)k);
     }
     /* The pictures' chunks point at their slices. */
     const uint8_t *vco = find(t1 + 8, be32(t1) - 8, "stco", &len);
     CHECK(vco && be32(vco + 12) == 20);
     CHECK(vco && mp4.b[be32(vco + 16) + 4] == 0x65 && mp4.b[be32(vco + 20) + 4] == 0x41);
-    (void)moov_at;
-    FILE *f = fopen(getenv("MP4_OUT") ? getenv("MP4_OUT") : "/dev/null", "wb");
+    const char *out = getenv(opus ? "MP4_OUT" : "MP4_OUT_AAC");
+    FILE *f = fopen(out ? out : "/dev/null", "wb");
     if (f) {
         fwrite(mp4.b, 1, mp4.len, f);
         fclose(f);
@@ -248,7 +292,8 @@ int main(void)
     /* The first sample is the IDR slice, length-prefixed, without SPS/PPS/AUD. */
     CHECK(be32(mp4.b + mdat_at + 8) == 100 && mp4.b[mdat_at + 12] == 0x65);
 
-    sound();
+    sound(true);
+    sound(false);
     if (failures) {
         printf("%d failure(s)\n", failures);
         return 1;

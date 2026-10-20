@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "kvm_audio.c" "opus.c" "aac.c" "resample.c"
+    SRCS "kvm_audio.c" "opus.c" "resample.c"
     INCLUDE_DIRS "include"
     PRIV_REQUIRES
         esp_driver_i2s

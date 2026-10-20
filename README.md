@@ -71,7 +71,7 @@ Useful for what it does today, and honest about the rest.
 |---|---|
 | Video: follows the target's resolution, MJPEG and H.264 | works; H.264 needs HTTPS |
 | Keyboard, mouse, media keys, pasting text in a layout | works |
-| From a phone or a tablet | works; touch trackpad, pinch zoom and on-screen keyboard |
+| From a phone or a tablet | works; touch trackpad, pointer stick, pinch zoom and on-screen keyboard |
 | Several viewers, one in control | works |
 | Virtual media: boot the target from an image | works; from microSD or the device's flash |
 | Recording, screenshots, dashcam, timelapse | works; on a microSD card |
@@ -364,8 +364,10 @@ and contributions of code, issues and ideas are just as welcome.
 
 Running one? Tell me what works for you and what gets in your way in the
 [feedback thread](https://github.com/orgs/espkvm/discussions/65), and how many you
-run in the [poll](https://github.com/orgs/espkvm/discussions/60). There is no
-telemetry in the firmware, so this is the only way I find out how it is used.
+run in the [poll](https://github.com/orgs/espkvm/discussions/60). The firmware
+itself sends nothing. If you turn on the update check, your browser also reports
+a random id of the device, its board and its version once a day, so I can count
+the devices in use (see [SETUP](docs/SETUP.md)).
 Questions, ideas and things people built go in
 [Discussions](https://github.com/orgs/espkvm/discussions).
 
