@@ -15,4 +15,6 @@
 # capture path (UYVY straight into the encoder) and a writable microSD.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
 CONFIG_ESP32P4_REV_MIN_300=y
+# rev 3.x: in-package PSRAM at 250 MHz, faster H.264 (see funcev_p4.defaults).
+CONFIG_SPIRAM_SPEED_250M=y
 CONFIG_KVM_UPDATE_URL="https://fw.espkvm.io/firmware/p4-wifi6-rev3/manifest.json"

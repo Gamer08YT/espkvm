@@ -17,6 +17,10 @@
 # encoder's RGB-direct path in (no PPA colour convert), which is faster at 1080p.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
 CONFIG_ESP32P4_REV_MIN_300=y
+# rev 3.x runs the in-package PSRAM at 250 MHz (IDF offers it only above rev 3.0).
+# The H.264 encoder is bound by PSRAM: 1080p went from 43 to 36 ms a frame,
+# 22.5 to 27 fps.
+CONFIG_SPIRAM_SPEED_250M=y
 
 # --- flash / partitions -----------------------------------------------------
 # 16 MB here vs 32 MB on the P4-ETH: the 32 MB table does not fit, so use the

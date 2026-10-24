@@ -66,7 +66,7 @@ Measured at 1080p, on both silicon revisions:
 | | MJPEG | H.264 |
 |---|---|---|
 | Frame rate, Waveshare ESP32-P4-ETH (rev v1.3) | 20 fps | ~7 fps |
-| Frame rate, Function EV (rev v3.2) | 23 fps | 22-24 fps |
+| Frame rate, Function EV (rev v3.2) | 23 fps | 26-27 fps |
 | Idle screen | 0 kbit/s (unchanged frames are dropped) | 170 kbit/s |
 | Screen in motion | 8.5 Mbit/s | ~500 kbit/s |
 | Chip temperature at full load | 46 &deg;C (rev v1.3) | 34 &deg;C (rev v3.2) |
@@ -91,7 +91,8 @@ detour costs ~104 ms of the ~150 ms a 1080p frame takes.
 
 On revision 3.x there is no detour: capture hands the encoder YUV422 and it takes
 it as it is. H.264 went from ~7 to 22-24 fps at 1080p, and 28 at 720p - as fast
-as MJPEG, at a fraction of the bandwidth, and cooler. On the older silicon the
+as MJPEG, at a fraction of the bandwidth, and cooler. From 0.69.0 the PSRAM runs
+at 250 MHz instead of 200, which only rev 3.x allows, and 1080p goes to 26-27 fps. On the older silicon the
 conversion and the encode at least overlap now instead of running one after the
 other. The measurements are in
 [HARDWARE-NOTES.md](HARDWARE-NOTES.md).
@@ -148,8 +149,8 @@ way out - it sends movement, not position.
 The Video readout (click the video figures in the status
 bar) shows how long a frame spends in the device and in this browser, and
 "Measure the delay" times the whole way round - pointer moved on the target until
-it shows here. On a Function EV at 1080p: about 160 ms with MJPEG and 155 ms
-with H.264.
+it shows here. On a Function EV at 1080p: about 160 ms with MJPEG, and 118 ms with H.264 over
+WebRTC (0.69.0).
 
 ## Target OS
 

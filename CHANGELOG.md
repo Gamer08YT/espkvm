@@ -5,6 +5,15 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.69.0] - 2026-10-24
+
+### Changed
+- H.264 at 1080p is faster on boards with a rev 3.x chip: about 27 frames a
+  second instead of 22 on the Function EV, and the delay from mouse to picture
+  goes from 150 to 118 ms. The memory now runs at 250 MHz instead of 200, which
+  only rev 3.x chips allow, and the encoder spends most of its time waiting on
+  memory. Builds for older chips are not changed.
+
 ## [0.68.0] - 2026-10-20
 
 ### Added

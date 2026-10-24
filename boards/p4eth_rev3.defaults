@@ -28,6 +28,8 @@
 # microSD becomes writable - the write timeout is an erratum of the older chip.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
 CONFIG_ESP32P4_REV_MIN_300=y
+# rev 3.x: in-package PSRAM at 250 MHz, faster H.264 (see funcev_p4.defaults).
+CONFIG_SPIRAM_SPEED_250M=y
 
 # --- updates ----------------------------------------------------------------
 # Its own slug, so a device that runs this image is offered this image again.

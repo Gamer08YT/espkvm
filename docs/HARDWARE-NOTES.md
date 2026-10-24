@@ -59,9 +59,37 @@ to carry MJPEG at all, not for smoothness.
 
 **That last line is about rev v1.3 silicon only.** On rev 3.x the capture hands
 the encoder YUV422 directly, the PPA step goes away, and 1080p H.264 runs at
-22-24 fps (28 at 720p) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
+26-27 fps (28 at 720p) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
 from this page have been read as the project's H.264 speed more than once; they
 are the speed of the board at the top of it.
+
+### The H.264 encoder waits on PSRAM
+
+On the Function EV the encoder was busy 96-99 % of the time at 1080p, and the
+time a frame takes follows the memory, not the format:
+
+| 1080p frame, Function EV (rev v3.2) | Encode | fps |
+|---|---|---|
+| UYVY in, PSRAM 200 MHz | 43 ms | 22.5 |
+| YUV420 in (converted by the CPU first, not counted), 200 MHz | 37.5 ms | - |
+| UYVY in, PSRAM 250 MHz | 36 ms | 26.5-27.5 |
+
+So from 0.69.0 every rev 3.x build runs PSRAM at 250 MHz (`CONFIG_SPIRAM_SPEED_250M`;
+IDF offers it only for rev 3.x targets). 10 minutes of 1080p H.264 and a night
+idle: 37 &deg;C, no errors. Espressif's 30 fps figure is for YUV420 input. The
+encoder takes YUV420 13 % faster, not the 25 % the smaller frame suggests.
+
+Getting YUV420 for free failed. The CSI bridge on rev 3.x has a colour-mode block
+(`host_cm_ctrl`) meant for YUV422 to YUV420. Two problems:
+
+- IDF's `esp_cam_ctlr_csi.c` sizes the DMA from the *input* bits per pixel, so
+  with input and output formats different a frame never completes.
+- Worked around that, the bridge writes zero bytes in YUV420 mode, for every
+  size and sync setting I tried. YUV422 through the same block works.
+
+Careful when trying it: the bridge controls the DMA flow. If it sends more bytes
+than the buffer holds, it writes past the buffer into PSRAM and the board
+boot-loops. It needs an esptool write to both app slots to recover.
 
 Verified end to end by capturing the Annex-B stream off the WebSocket and
 decoding it with ffmpeg: `Constrained Baseline, 1920x1080, yuv420p`, correct
