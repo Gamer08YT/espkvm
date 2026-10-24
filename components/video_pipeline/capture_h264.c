@@ -18,6 +18,7 @@
  */
 #include "h264_sps.h"
 #include "capture_priv.h"
+#include "capture.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -218,6 +219,7 @@ void capture_h264_reserve(uint32_t w, uint32_t h)
 /** Last values pushed into the encoder, so a setting change is noticed. */
 static uint8_t s_gop;
 static uint32_t s_bitrate;
+static int32_t s_fps;
 
 /* Shared with h264_probe.c (same component); forward-declared there. */
 const char *h264_err_name(esp_h264_err_t err)
@@ -309,16 +311,29 @@ static void encoder_park(void)
     /* Deliberately nothing: the point is to keep both memory and hardware. */
 }
 
+/** The frame rate the encoder plans for: the limit, or the source's refresh
+ *  rate when that is lower. The rate control splits the bitrate by it, so a
+ *  60 fps limit on a 30 Hz picture would give each frame half the bits. */
+static int32_t wanted_fps(void)
+{
+    int32_t fps = kvm_setting_int("vid_fps_max");
+    if (fps < 1 || fps > 255) {
+        fps = 30;
+    }
+    kvm_video_status_t st;
+    capture_status_get(&st);
+    if (st.input_hz > 0 && st.input_hz < fps) {
+        fps = st.input_hz;
+    }
+    return fps;
+}
+
 /** Keyframe interval: two seconds of the current frame rate, within the byte
  *  the encoder takes. Long enough not to cost bandwidth, short enough that a
  *  decoder recovers on its own if it ever loses sync. */
 static uint8_t wanted_gop(void)
 {
-    int32_t fps = kvm_setting_int("vid_fps_max");
-    if (fps < 1) {
-        fps = 30;
-    }
-    int32_t gop = fps * 2;
+    int32_t gop = wanted_fps() * 2;
     if (gop > 250) {
         gop = 250;
     }
@@ -372,10 +387,8 @@ static uint32_t wanted_bitrate(void)
 
 static esp_err_t encoder_open(uint32_t w, uint32_t h)
 {
-    int32_t fps = kvm_setting_int("vid_fps_max");
-    if (fps < 1 || fps > 255) {
-        fps = 30;
-    }
+    const int32_t fps = wanted_fps();
+    s_fps = fps;
     s_gop = wanted_gop();
     s_bitrate = wanted_bitrate();
 
@@ -825,6 +838,18 @@ static void follow_settings(void)
     }
     /* GOP is left alone: it is also the keyframe-request mechanism, and the
      * encoder applies a changed value at the next IDR anyway. */
+
+    /* The encoder reserved at boot is built before the source's refresh rate
+     * is known. The new GOP length that goes with the rate costs one IDR. */
+    const int32_t fps = wanted_fps();
+    if (fps != s_fps && esp_h264_enc_set_fps(&s_param->base, (uint8_t)fps) == ESP_H264_ERR_OK) {
+        s_fps = fps;
+        const uint8_t gop = wanted_gop();
+        if (esp_h264_enc_set_gop(&s_param->base, gop) == ESP_H264_ERR_OK) {
+            s_gop = gop;
+        }
+        ESP_LOGI(CAPTURE_LOG_TAG, "h264 encoder now @%" PRId32 " fps, gop %u", fps, s_gop);
+    }
 }
 
 /* The SPS rewrite moves the whole IDR through the CPU cache. Write it back

@@ -92,7 +92,9 @@ detour costs ~104 ms of the ~150 ms a 1080p frame takes.
 On revision 3.x there is no detour: capture hands the encoder YUV422 and it takes
 it as it is. H.264 went from ~7 to 22-24 fps at 1080p, and 28 at 720p - as fast
 as MJPEG, at a fraction of the bandwidth, and cooler. From 0.69.0 the PSRAM runs
-at 250 MHz instead of 200, which only rev 3.x allows, and 1080p goes to 26-27 fps. On the older silicon the
+at 250 MHz instead of 200, which only rev 3.x allows, and 1080p goes to 26-27 fps.
+From 0.69.1 the frame rate limit is 60 by default, and 720p from a 60 Hz source
+runs at 59. On the older silicon the
 conversion and the encode at least overlap now instead of running one after the
 other. The measurements are in
 [HARDWARE-NOTES.md](HARDWARE-NOTES.md).

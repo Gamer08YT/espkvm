@@ -59,7 +59,7 @@ to carry MJPEG at all, not for smoothness.
 
 **That last line is about rev v1.3 silicon only.** On rev 3.x the capture hands
 the encoder YUV422 directly, the PPA step goes away, and 1080p H.264 runs at
-26-27 fps (28 at 720p) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
+26-27 fps (59 at 720p60) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
 from this page have been read as the project's H.264 speed more than once; they
 are the speed of the board at the top of it.
 

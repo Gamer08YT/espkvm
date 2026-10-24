@@ -116,7 +116,7 @@ void capture_loop_run(capture_ctx_t *c)
 
     int64_t hdmi_recover_cooldown_until_us = 0;
     int64_t switch_retry_us = 0; /* after a refused codec switch */
-    int64_t last_encode_us = 0;
+    int64_t next_encode_us = 0; /* frame rate limit: when the next encode is due */
     /* Set after anything that invalidates what clients are holding. */
     bool force_publish = true;
 
@@ -283,12 +283,20 @@ void capture_loop_run(capture_ctx_t *c)
             continue;
         }
         if (fps_max > 0) {
-            const int64_t min_interval_us = 1000000 / fps_max;
+            /*
+             * A schedule, not a gap since the last encode. Frames come with
+             * jitter, and a gap check dropped every frame that came a hair
+             * early: 60 Hz input with a 30 fps limit gave 25 fps. A frame up to
+             * a quarter interval early is taken; the schedule still steps by a
+             * whole interval, so the average stays at the limit.
+             */
+            const int64_t interval_us = 1000000 / fps_max;
             const int64_t now_us = esp_timer_get_time();
-            if (now_us - last_encode_us < min_interval_us) {
+            if (now_us < next_encode_us - interval_us / 4) {
                 continue;
             }
-            last_encode_us = now_us;
+            next_encode_us = now_us - next_encode_us > interval_us ? now_us + interval_us
+                                                                   : next_encode_us + interval_us;
         }
         /*
          * Take the newest complete frame and hold it for the whole encode: marking

@@ -135,7 +135,7 @@ static const kvm_setting_t s_settings[] = {
         .title = "Frame rate limit",
         .help = "Upper bound on encoded frames per second. Lower it to save bandwidth "
                 "on a slow link.",
-        .min = 1, .max = 60, .def = 30, .requires_cap = KVM_CAP_VIDEO,
+        .min = 1, .max = 60, .def = 60, .requires_cap = KVM_CAP_VIDEO,
     },
     {
         .key = "vid_adapt", .section = "video", .group = "Picture", .type = KVM_VT_BOOL,

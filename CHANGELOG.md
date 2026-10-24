@@ -5,6 +5,22 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.69.1] - 2026-10-24
+
+### Changed
+- The frame rate limit is 60 by default instead of 30. 720p from a 60 Hz
+  source now runs at 59 frames a second on a rev 3.x chip, where it was 26.
+  A device that has the limit set keeps its value.
+- The H.264 encoder plans for the source's frame rate when it is below the
+  limit, so a 30 Hz picture with the limit at 60 still gets the full bitrate
+  for each frame.
+
+### Fixed
+- The frame rate limit gave fewer frames than it said. With a 60 Hz picture
+  and the limit at 30, about 25 frames a second went out: a frame that came a
+  hair early was dropped, and the next one was a whole frame later. Now it is
+  30.
+
 ## [0.69.0] - 2026-10-24
 
 ### Changed
