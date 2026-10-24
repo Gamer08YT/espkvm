@@ -37,6 +37,7 @@ typedef kvm_bridge_edid_profile_t tc358743_edid_profile_t;
 #define TC358743_EDID_720P KVM_BRIDGE_EDID_720P         /**< the same list without 1080p */
 #define TC358743_EDID_1024X768 KVM_BRIDGE_EDID_1024X768 /**< everything up to 1024x768 */
 #define TC358743_EDID_480P KVM_BRIDGE_EDID_480P         /**< 720x480 and below, for old consoles */
+#define TC358743_EDID_FULL_16BPP KVM_BRIDGE_EDID_FULL_16BPP /**< full, 1080p50 preferred */
 
 /** Input timing as measured by the bridge, plus the link state that qualifies it. */
 typedef kvm_bridge_timings_t tc358743_timings_t;

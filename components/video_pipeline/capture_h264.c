@@ -260,9 +260,11 @@ static size_t s_enc_internal_bytes;
  * answered HTTP and reset every HTTPS handshake, which is the web interface
  * gone. Internal RAM is not ours to hoard.
  *
- * What is left is what happens now: the switch falls back to MJPEG and says
- * why, in both heaps' numbers. A device that needs H.264 after changing
- * resolution has to be restarted.
+ * What works is giving the encoder the same block every time: h264_ref_pool.c
+ * takes the reference rows once, sized for 1920 wide, and hands them back to
+ * each build, so the encoder no longer needs a fresh 135 KB run after a
+ * resolution change. If a build still fails, the switch falls back to MJPEG
+ * and says why, in both heaps' numbers.
  */
 
 static void encoder_release(void)
@@ -313,7 +315,12 @@ static void encoder_park(void)
 
 /** The frame rate the encoder plans for: the limit, or the source's refresh
  *  rate when that is lower. The rate control splits the bitrate by it, so a
- *  60 fps limit on a 30 Hz picture would give each frame half the bits. */
+ *  60 fps limit on a 30 Hz picture would give each frame half the bits.
+ *
+ *  On rev 3.x the encoder itself is often the limit - 1080p50 comes out at 25 -
+ *  so the rate it actually manages counts too, a frame over it. Older chips
+ *  stay at most 30, as before: the PPA pass holds them far lower, and planning
+ *  for that would change how much a frame there may take. */
 static int32_t wanted_fps(void)
 {
     int32_t fps = kvm_setting_int("vid_fps_max");
@@ -325,6 +332,34 @@ static int32_t wanted_fps(void)
     if (st.input_hz > 0 && st.input_hz < fps) {
         fps = st.input_hz;
     }
+#if CAPTURE_DIRECT_ENCODE
+    /* The status counts in one-second windows, and the first one after a
+     * viewer arrives is partial; a rate counts once two windows agree. */
+    static uint32_t s_window_x100;
+    static int32_t s_made_prev, s_made;
+    /* A window with no frames at all says nothing about the encoder: no
+     * viewer, or one on a slow link that has not acknowledged yet. Taking it
+     * as "unknown" swung the plan between 50 and 20 every few seconds over
+     * Tailscale, an IDR each way. */
+    if (st.fps_x100 != s_window_x100 && st.fps_x100 > 0) {
+        s_window_x100 = st.fps_x100;
+        const int32_t made = (int32_t)((st.fps_x100 + 99u) / 100u) + 1;
+        const int32_t diff = made > s_made_prev ? made - s_made_prev : s_made_prev - made;
+        if (diff <= 2) {
+            s_made = made;
+        }
+        s_made_prev = made;
+    }
+    if (s_made > 0 && s_made < fps) {
+        fps = s_made;
+    }
+#else
+    /* What these chips planned for before the limit's default went from 30 to
+     * 60; none of them gets near 30 from H.264 anyway. */
+    if (fps > 30) {
+        fps = 30;
+    }
+#endif
     return fps;
 }
 
@@ -840,9 +875,12 @@ static void follow_settings(void)
      * encoder applies a changed value at the next IDR anyway. */
 
     /* The encoder reserved at boot is built before the source's refresh rate
-     * is known. The new GOP length that goes with the rate costs one IDR. */
+     * is known, and on rev 3.x the rate it manages is measured as it runs. The
+     * new GOP length that goes with the rate costs one IDR. */
+    /* A step of a few frames: the measured rate wanders by one or two. */
     const int32_t fps = wanted_fps();
-    if (fps != s_fps && esp_h264_enc_set_fps(&s_param->base, (uint8_t)fps) == ESP_H264_ERR_OK) {
+    const int32_t step = fps > s_fps ? fps - s_fps : s_fps - fps;
+    if (step >= 3 && esp_h264_enc_set_fps(&s_param->base, (uint8_t)fps) == ESP_H264_ERR_OK) {
         s_fps = fps;
         const uint8_t gop = wanted_gop();
         if (esp_h264_enc_set_gop(&s_param->base, gop) == ESP_H264_ERR_OK) {

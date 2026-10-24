@@ -147,6 +147,9 @@ static const httpd_uri_t k_routes[] = {
 
 const httpd_uri_t *webrtc_api_routes(size_t *count)
 {
+    /* Registered with the routes: the pointer moves that come over a data
+     * channel go where the WebSocket's input goes. */
+    kvm_webrtc_set_input(kvm_web_webrtc_input);
     *count = sizeof(k_routes) / sizeof(k_routes[0]);
     return k_routes;
 }

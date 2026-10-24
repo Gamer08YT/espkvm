@@ -57,6 +57,16 @@ void kvm_webrtc_sound(uint32_t id, bool on);
 /** Sessions open now. */
 int kvm_webrtc_count(void);
 
+/**
+ * A message from a session's data channel - the console's pointer moves.
+ * Called on the module's receive task; @p owner is what kvm_webrtc_offer() was
+ * given.
+ */
+typedef void (*kvm_webrtc_input_fn)(const uint8_t owner[32], const uint8_t *msg, size_t len);
+
+/** Where data channel messages go; NULL drops them. */
+void kvm_webrtc_set_input(kvm_webrtc_input_fn fn);
+
 #ifdef __cplusplus
 }
 #endif

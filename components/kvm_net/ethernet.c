@@ -323,6 +323,23 @@ IRAM_ATTR void __wrap_esp_restart_noos(void)
 
 #if CONFIG_KVM_ETH_ENABLE
 
+static void eth_start(void)
+{
+    if (esp_eth_start(s_eth_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "eth start failed");
+        return;
+    }
+    const char *hostname = kvm_setting_str("net_hostname");
+    kvm_net_advertise(hostname && hostname[0] ? hostname : CONFIG_KVM_MDNS_HOSTNAME);
+}
+
+static void eth_start_task(void *arg)
+{
+    (void)arg;
+    eth_start();
+    vTaskDelete(NULL);
+}
+
 esp_err_t ethernet_init(void)
 {
     esp_err_t err = esp_netif_init();
@@ -412,9 +429,12 @@ esp_err_t ethernet_init(void)
         }
     }
 
-    ESP_RETURN_ON_ERROR(esp_eth_start(s_eth_handle), TAG, "eth start");
-
-    kvm_net_advertise(hostname);
+    /* esp_eth_start() waits for the PHY to finish autonegotiation, about 2.7 s
+     * with a cable in. Started on its own task, the web server, USB and capture
+     * come up meanwhile instead of after it. */
+    if (xTaskCreate(eth_start_task, "eth_start", 4096, NULL, 5, NULL) != pdPASS) {
+        eth_start();
+    }
     return ESP_OK;
 }
 #else

@@ -13,6 +13,7 @@
 
 #include "rtp_h264.h"
 #include "sdp.h"
+#include "sctp.h"
 #include "sps_patch.h"
 #include "srtp.h"
 #include "stun.h"
@@ -408,10 +409,31 @@ static void test_sdp(void)
         CHECK(strstr(big, "a=group:BUNDLE 0 1\r\n") != NULL);
         CHECK(sdp_write_answer(&o, &pa, big, 900) == -1);
     }
-    /* A third m-line, or audio sharing the video's mid: refused. */
-    char three[4200];
+    /* A data channel after the two: answered last, on the browser's mids. */
+    char three[4400];
+    snprintf(three, sizeof(three),
+             "%sm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\na=sctp-port:5001\r\n",
+             two);
+    CHECK(sdp_parse_offer(three, &o) == 0 && o.has_data && o.sctp_port == 5001 &&
+          strcmp(o.data_mid, "2") == 0);
+    {
+        sdp_answer_params_t pa = p;
+        char big[4096];
+        CHECK(sdp_write_answer(&o, &pa, big, sizeof(big)) > 0);
+        const char *ma = strstr(big, "m=audio "), *md = strstr(big, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n");
+        CHECK(ma && md && ma < md);
+        CHECK(strstr(big, "a=group:BUNDLE 0 1 2\r\n") != NULL);
+        CHECK(strstr(big, "a=sctp-port:5000\r\n") != NULL);
+    }
+    /* A data channel without a mid, a fourth m-line, or audio sharing the
+       video's mid: refused. */
     snprintf(three, sizeof(three), "%sm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n", two);
     CHECK(sdp_parse_offer(three, &o) == -1);
+    char four[4600];
+    snprintf(four, sizeof(four),
+             "%sm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:2\r\nm=video 9 UDP/TLS/RTP/SAVPF 127\r\n",
+             two);
+    CHECK(sdp_parse_offer(four, &o) == -1);
     char *same = strdup(two);
     memcpy(strstr(same, "a=mid:1"), "a=mid:0", 7);
     CHECK(sdp_parse_offer(same, &o) == -1);
@@ -461,6 +483,160 @@ static void test_sdp(void)
 }
 
 /* The same SPS and the same answer as web/test/spsPatch.test.ts gives. */
+
+/* ---- SCTP ---- */
+
+static int s_msgs;
+static uint8_t s_msg[16];
+static size_t s_msg_len;
+
+static void on_msg(void *ctx, uint16_t stream, uint32_t ppid, const uint8_t *d, size_t n)
+{
+    (void)ctx;
+    CHECK(stream == 0 && ppid == SCTP_PPID_BINARY);
+    s_msgs++;
+    s_msg_len = n < sizeof(s_msg) ? n : sizeof(s_msg);
+    memcpy(s_msg, d, s_msg_len);
+}
+
+static size_t pkt_hdr(uint8_t *p, uint32_t vtag)
+{
+    memset(p, 0, 12);
+    p[0] = 0x13; p[1] = 0x88; /* 5000 */
+    p[2] = 0x13; p[3] = 0x88;
+    p[4] = (uint8_t)(vtag >> 24); p[5] = (uint8_t)(vtag >> 16); p[6] = (uint8_t)(vtag >> 8); p[7] = (uint8_t)vtag;
+    return 12;
+}
+
+static size_t put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+    return 4;
+}
+
+static size_t data_pkt(uint8_t *p, uint32_t vtag, uint32_t tsn, uint8_t flags, const char *msg)
+{
+    size_t n = pkt_hdr(p, vtag);
+    const size_t ml = strlen(msg);
+    p[n] = 0; p[n + 1] = flags; p[n + 2] = 0; p[n + 3] = (uint8_t)(16 + ml);
+    n += 4;
+    n += put_be32(p + n, tsn);
+    p[n++] = 0; p[n++] = 0; p[n++] = 0; p[n++] = 0; /* stream 0, ssn 0 */
+    n += put_be32(p + n, SCTP_PPID_BINARY);
+    memcpy(p + n, msg, ml);
+    n += (ml + 3) & ~3u;
+    return n;
+}
+
+static uint32_t be32(const uint8_t *p)
+{
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static void test_sctp(void)
+{
+    CHECK(sctp_crc32c((const uint8_t *)"123456789", 9) == 0xe3069283u);
+
+    sctp_assoc_t a;
+    sctp_init(&a, 5000, 0xcafef00d, 1000);
+    uint8_t in[256], out[256];
+
+    /* INIT: tag 0, initiate tag 0x11223344, first TSN 500. */
+    size_t n = pkt_hdr(in, 0);
+    const uint8_t init[] = {1, 0, 0, 20, 0x11, 0x22, 0x33, 0x44, 0, 1, 0, 0, 0, 16, 0, 16, 0, 0, 1, 0xf4};
+    memcpy(in + n, init, sizeof(init));
+    n += sizeof(init);
+    size_t r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(r > 12 && out[12] == 2);              /* INIT ACK */
+    CHECK(be32(out + 4) == 0x11223344u);        /* to the browser's tag */
+    CHECK(be32(out + 16) == 0xcafef00du);       /* our tag */
+    {
+        uint8_t c[256];
+        memcpy(c, out, r);
+        const uint32_t got = (uint32_t)c[8] | (uint32_t)c[9] << 8 | (uint32_t)c[10] << 16 | (uint32_t)c[11] << 24;
+        memset(c + 8, 0, 4);
+        CHECK(sctp_crc32c(c, r) == got);
+    }
+    CHECK(a.cum_tsn == 499 && !a.up);
+
+    /* COOKIE ECHO -> COOKIE ACK. A wrong tag is ignored. */
+    n = pkt_hdr(in, 0xcafef00d);
+    const uint8_t echo[] = {10, 0, 0, 12, 0xca, 0xfe, 0xf0, 0x0d, 0x11, 0x22, 0x33, 0x44};
+    memcpy(in + n, echo, sizeof(echo));
+    n += sizeof(echo);
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(r == 16 && out[12] == 11 && a.up);
+    pkt_hdr(in, 0xdeadbeef);
+    CHECK(sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL) == 0);
+
+    /* In order: delivered; acknowledged later (every few packets, or when
+       the caller asks with sctp_sack). */
+    n = data_pkt(in, 0xcafef00d, 500, 0x07, "abcdefgh");
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(s_msgs == 1 && s_msg_len == 8 && memcmp(s_msg, "abcdefgh", 8) == 0);
+    CHECK(r == 0);
+    r = sctp_sack(&a, out, sizeof(out));
+    CHECK(r == 12 + 16 && out[12] == 3 && be32(out + 16) == 500);
+    CHECK(sctp_sack(&a, out, sizeof(out)) == 0); /* nothing new since */
+    /* The same TSN again: not delivered twice. */
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(s_msgs == 1 && r == 0);
+
+    /* 502 before 501: delivered at once, a gap block reported. */
+    n = data_pkt(in, 0xcafef00d, 502, 0x07, "x");
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(s_msgs == 2 && be32(out + 16) == 500 && out[24] == 0 && out[25] == 1);
+    CHECK(out[28] == 0 && out[29] == 2 && out[30] == 0 && out[31] == 2);
+    n = data_pkt(in, 0xcafef00d, 501, 0x07, "y");
+    (void)sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    r = sctp_sack(&a, out, sizeof(out));
+    CHECK(s_msgs == 3 && r > 12 && be32(out + 16) == 502 && out[25] == 0);
+
+    /* A fragment is skipped, but its TSN counts. */
+    n = data_pkt(in, 0xcafef00d, 503, 0x06, "frag");
+    (void)sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(s_msgs == 3 && a.cum_tsn == 503);
+
+    /* FORWARD TSN past a lost one; then a far jump. */
+    n = pkt_hdr(in, 0xcafef00d);
+    const uint8_t fwd[] = {192, 0, 0, 8, 0, 0, 0x01, 0xfa};
+    memcpy(in + n, fwd, sizeof(fwd));
+    n += sizeof(fwd);
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(a.cum_tsn == 506 && r > 12 && be32(out + 16) == 506);
+    in[n - 4] = 0x7f;
+    (void)sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(a.cum_tsn == 0x7f0001fau && a.ahead == 0);
+
+    /* Every SCTP_SACK_EVERY packets a SACK comes on its own. */
+    {
+        size_t got = 0;
+        for (uint32_t k = 1; k <= SCTP_SACK_EVERY; k++) {
+            n = data_pkt(in, 0xcafef00d, 0x7f0001fau + k, 0x07, "m");
+            if (sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL) > 0) got = k;
+        }
+        CHECK(got == SCTP_SACK_EVERY);
+    }
+
+    /* HEARTBEAT is echoed. */
+    n = pkt_hdr(in, 0xcafef00d);
+    const uint8_t hb[] = {4, 0, 0, 12, 0, 1, 0, 8, 1, 2, 3, 4};
+    memcpy(in + n, hb, sizeof(hb));
+    n += sizeof(hb);
+    r = sctp_input(&a, in, n, out, sizeof(out), on_msg, NULL);
+    CHECK(r == 24 && out[12] == 5 && memcmp(out + 16, hb + 4, 8) == 0);
+
+    /* Every truncation and a tiny answer buffer: no reads or writes past the end. */
+    n = data_pkt(in, 0xcafef00d, 0x7f000200u, 0x07, "abcdefgh");
+    for (size_t k = 0; k <= n; k++) {
+        uint8_t *t = malloc(k ? k : 1);
+        memcpy(t, in, k);
+        (void)sctp_input(&a, t, k, out, sizeof(out), on_msg, NULL);
+        free(t);
+    }
+    CHECK(sctp_input(&a, in, n, out, 20, on_msg, NULL) == 0);
+}
+
 static void test_sps(void)
 {
     static const uint8_t sps[] = {0x67, 0x42, 0xc0, 0x29, 0x95, 0xa0, 0x1e, 0x00, 0x89, 0x79, 0x61,
@@ -503,6 +679,7 @@ int main(void)
     test_rtp();
     test_sdp();
     test_sps();
+    test_sctp();
     if (fails) {
         printf("%d check(s) failed\n", fails);
         return 1;

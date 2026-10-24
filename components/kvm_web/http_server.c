@@ -2768,6 +2768,9 @@ extern const char icon_512_end[] asm("_binary_icon_512_png_end");
 
 static SemaphoreHandle_t s_ws_mu;
 static int s_ws_fd = -1;
+/* The mouse buttons as the controlling socket last set them. Pointer moves
+   that come over a WebRTC data channel carry these, not their own. */
+static volatile uint8_t s_ws_buttons;
 static httpd_handle_t s_httpd;
 /** A copy of the server's own public certificate (PEM), for the download
  *  endpoint that lets an operator trust this device. NULL when TLS is off. */
@@ -3245,6 +3248,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
     if (demoted >= 0) {
         ws_send_control(demoted, CTRL_HELD_OTHER);
         usb_hid_release_all();
+        s_ws_buttons = 0;
     }
 
     /* Let this client know where it stands, so the console can show a "someone
@@ -3273,6 +3277,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
              * shift the pointer. */
             const uint16_t x = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
             const uint16_t y = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+            s_ws_buttons = buf[1];
             usb_hid_mouse_abs(buf[1], x, y, (int8_t)buf[6], (int8_t)buf[7]);
         }
         break;
@@ -3280,6 +3285,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
         if (pkt.len >= 8) {
             const int16_t dx = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8));
             const int16_t dy = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8));
+            s_ws_buttons = buf[1];
             usb_hid_mouse_rel(buf[1], dx, dy, (int8_t)buf[6], (int8_t)buf[7]);
         }
         break;
@@ -3301,6 +3307,7 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
         break;
     case WS_C2D_RELEASE_ALL:
         usb_hid_release_all();
+        s_ws_buttons = 0;
         break;
     case WS_C2D_PING:
         ws_send_pong(my_fd);
@@ -3317,6 +3324,42 @@ static esp_err_t ws_input_handler(httpd_req_t *req)
     }
 
     return ESP_OK;
+}
+
+/*
+ * Pointer moves over the console's WebRTC data channel: UDP, unordered, never
+ * resent, so a lost packet costs one move rather than holding back the ones
+ * behind it, as a lost TCP segment does on the WebSocket. Only moves come this
+ * way. Buttons, the wheel and keys stay on the WebSocket, and a move from here
+ * takes the buttons the WebSocket last set: a move that comes late can shift
+ * the pointer, never press or release anything. It counts only while a socket
+ * of the same sign-in holds control.
+ */
+void kvm_web_webrtc_input(const uint8_t owner[32], const uint8_t *msg, size_t len)
+{
+    if (len < 8 || (msg[0] != WS_C2D_MOUSE_ABS && msg[0] != WS_C2D_MOUSE_REL) || !s_ws_mu) {
+        return;
+    }
+    if (xSemaphoreTake(s_ws_mu, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+    uint8_t holder[32];
+    const bool ours = s_ws_fd >= 0 && kvm_auth_socket_session(s_ws_fd, holder) &&
+                      memcmp(holder, owner, 32) == 0;
+    const uint8_t buttons = s_ws_buttons;
+    xSemaphoreGive(s_ws_mu);
+    if (!ours) {
+        return;
+    }
+    if (msg[0] == WS_C2D_MOUSE_ABS) {
+        const uint16_t x = (uint16_t)msg[2] | ((uint16_t)msg[3] << 8);
+        const uint16_t y = (uint16_t)msg[4] | ((uint16_t)msg[5] << 8);
+        usb_hid_mouse_abs(buttons, x, y, 0, 0);
+    } else {
+        const int16_t dx = (int16_t)((uint16_t)msg[2] | ((uint16_t)msg[3] << 8));
+        const int16_t dy = (int16_t)((uint16_t)msg[4] | ((uint16_t)msg[5] << 8));
+        usb_hid_mouse_rel(buttons, dx, dy, 0, 0);
+    }
 }
 
 static esp_err_t root_get(httpd_req_t *req)
@@ -4411,7 +4454,9 @@ static esp_err_t ws_pre_handshake(httpd_req_t *req)
     }
     /* Frames carry no headers, so the socket itself is the credential from
      * here on. */
-    kvm_auth_mark_socket(httpd_req_to_sockfd(req));
+    uint8_t session[32];
+    (void)kvm_auth_session_of(req, session);
+    kvm_auth_mark_socket(httpd_req_to_sockfd(req), session);
     return ESP_OK;
 }
 

@@ -28,6 +28,17 @@ static bool starts(const char *line, size_t len, const char *prefix)
     return len >= n && memcmp(line, prefix, n) == 0;
 }
 
+static bool contains(const char *line, size_t len, const char *needle)
+{
+    const size_t n = strlen(needle);
+    for (size_t i = 0; i + n <= len; i++) {
+        if (memcmp(line + i, needle, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Copy the rest of a line after @p skip into @p out, bounded. */
 static void copy_rest(const char *line, size_t len, size_t skip, char *out, size_t cap)
 {
@@ -159,7 +170,8 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
     out->pt = -1;
     pt_info_t pts[MAX_PT];
     int pt_n = 0;
-    /* 0: session level, 1: the video m-line, 2: one refused, 3: the audio one. */
+    /* 0: session level, 1: the video m-line, 2: one refused, 3: the audio one,
+       4: the data channel. */
     int section = 0;
     bool took_video = false;
     bool audio_opus = false;
@@ -176,21 +188,48 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
         p += raw + (eol ? 1 : 0);
 
         if (starts(line, len, "m=")) {
-            out->m_count++;
+            char kind = 0;
             if (!took_video && starts(line, len, "m=video ")) {
                 took_video = true;
                 section = 1;
+                kind = 'v';
             } else if (!out->has_audio && starts(line, len, "m=audio ")) {
                 out->has_audio = true;
                 out->audio_first = !took_video;
                 section = 3;
+                kind = 'a';
+            } else if (!out->has_data && starts(line, len, "m=application ") &&
+                       contains(line, len, " webrtc-datachannel")) {
+                out->has_data = true;
+                out->sctp_port = 5000;
+                section = 4;
+                kind = 'd';
             } else {
                 section = 2;
             }
+            if (kind && out->m_count < 3) {
+                out->order[out->m_count] = kind;
+            }
+            out->m_count++;
             continue;
         }
         if (section == 2) {
             continue;
+        }
+        if (section == 4) {
+            if (starts(line, len, "a=mid:")) {
+                copy_rest(line, len, 6, out->data_mid, sizeof(out->data_mid));
+            } else if (starts(line, len, "a=sctp-port:")) {
+                char num[8];
+                copy_rest(line, len, 12, num, sizeof(num));
+                const int port = atoi(num);
+                if (port > 0 && port <= 65535) {
+                    out->sctp_port = port;
+                }
+            }
+            if (!starts(line, len, "a=ice-") && !starts(line, len, "a=fingerprint:")) {
+                continue;
+            }
         }
         if (section == 3) {
             if (starts(line, len, "a=mid:")) {
@@ -300,12 +339,16 @@ int sdp_parse_offer(const char *sdp, sdp_offer_t *out)
     /* Video, and audio if any, or the answer would have to decline the rest;
        this console never offers more. The mids go back into the answer, so
        they must be plain tokens. */
-    if (!took_video || out->m_count != (out->has_audio ? 2 : 1) || !best || !out->ufrag[0] ||
+    if (!took_video || out->m_count != 1 + out->has_audio + out->has_data || !best || !out->ufrag[0] ||
         !out->pwd[0] || !out->has_fingerprint || !token(out->mid) || !hex_token(best->plid)) {
         return -1;
     }
     if (out->has_audio &&
         (!audio_opus || !token(out->audio_mid) || strcmp(out->audio_mid, out->mid) == 0)) {
+        return -1;
+    }
+    if (out->has_data && (!token(out->data_mid) || strcmp(out->data_mid, out->mid) == 0 ||
+                          (out->has_audio && strcmp(out->data_mid, out->audio_mid) == 0))) {
         return -1;
     }
     out->pt = best->pt;
@@ -376,56 +419,82 @@ static void put_audio(sb_t *s, const sdp_offer_t *o, const sdp_answer_params_t *
     put_candidates(s, a);
 }
 
+static void put_video(sb_t *s, const sdp_offer_t *o, const sdp_answer_params_t *a)
+{
+    put(s, "m=video 9 UDP/TLS/RTP/SAVPF %d\r\n", o->pt);
+    put_transport(s, a, o->mid);
+    if (o->rtcp_rsize) {
+        put(s, "a=rtcp-rsize\r\n");
+    }
+    put(s, "a=rtpmap:%d H264/90000\r\n", o->pt);
+    if (o->fb_nack) {
+        put(s, "a=rtcp-fb:%d nack\r\n", o->pt);
+    }
+    if (o->fb_pli) {
+        put(s, "a=rtcp-fb:%d nack pli\r\n", o->pt);
+    }
+    if (o->fb_fir) {
+        put(s, "a=rtcp-fb:%d ccm fir\r\n", o->pt);
+    }
+    /* No goog-remb: Chrome's estimate starts near 300 kbit/s and climbs for
+       tens of seconds, so following it would blur the first half minute. The
+       bitrate follows loss instead, the same way it does for the WebSocket. */
+    put(s,
+        "a=fmtp:%d level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%s\r\n",
+        o->pt, o->plid);
+    if (o->playout_ext) {
+        put(s, "a=extmap:%d http://www.webrtc.org/experiments/rtp-hdrext/playout-delay\r\n",
+            o->playout_ext);
+    }
+    put(s, "a=msid:espkvm screen\r\na=ssrc:%u cname:espkvm\r\n", (unsigned)a->ssrc);
+    put_candidates(s, a);
+}
+
+/* The data channel: SCTP over the same DTLS. The device's own SCTP port is
+   5000 too; nothing else shares the association. */
+static void put_data(sb_t *s, const sdp_offer_t *o, const sdp_answer_params_t *a)
+{
+    put(s, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n");
+    put(s, "c=IN IP4 0.0.0.0\r\n");
+    put(s, "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\na=fingerprint:sha-256 ", a->ufrag, a->pwd);
+    for (int i = 0; i < 32; i++) {
+        put(s, i < 31 ? "%02X:" : "%02X\r\n", a->fingerprint[i]);
+    }
+    put(s, "a=setup:passive\r\na=mid:%s\r\na=sctp-port:5000\r\na=max-message-size:1024\r\n",
+        o->data_mid);
+    put_candidates(s, a);
+}
+
+static const char *mid_of(const sdp_offer_t *o, char kind)
+{
+    return kind == 'a' ? o->audio_mid : kind == 'd' ? o->data_mid : o->mid;
+}
+
 int sdp_write_answer(const sdp_offer_t *o, const sdp_answer_params_t *a, char *out, size_t cap)
 {
     if (cap == 0) {
         return -1;
     }
     sb_t s = {.b = out, .cap = cap};
+    const int n = o->m_count < 3 ? o->m_count : 3;
     put(&s, "v=0\r\no=- %u 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n", (unsigned)a->ssrc);
-    if (!o->has_audio) {
-        put(&s, "a=group:BUNDLE %s\r\n", o->mid);
-    } else if (o->audio_first) {
-        put(&s, "a=group:BUNDLE %s %s\r\n", o->audio_mid, o->mid);
-    } else {
-        put(&s, "a=group:BUNDLE %s %s\r\n", o->mid, o->audio_mid);
+    put(&s, "a=group:BUNDLE");
+    for (int i = 0; i < n; i++) {
+        put(&s, " %s", mid_of(o, o->order[i]));
     }
-    put(&s, "a=ice-lite\r\na=msid-semantic: WMS espkvm\r\n");
-    if (o->has_audio && o->audio_first) {
-        put_audio(&s, o, a);
-    }
-    put(&s, "m=video 9 UDP/TLS/RTP/SAVPF %d\r\n", o->pt);
-    put_transport(&s, a, o->mid);
-    if (o->rtcp_rsize) {
-        put(&s, "a=rtcp-rsize\r\n");
-    }
-    put(&s, "a=rtpmap:%d H264/90000\r\n", o->pt);
-    if (o->fb_nack) {
-        put(&s, "a=rtcp-fb:%d nack\r\n", o->pt);
-    }
-    if (o->fb_pli) {
-        put(&s, "a=rtcp-fb:%d nack pli\r\n", o->pt);
-    }
-    if (o->fb_fir) {
-        put(&s, "a=rtcp-fb:%d ccm fir\r\n", o->pt);
-    }
-    /* No goog-remb: Chrome's estimate starts near 300 kbit/s and climbs for
-       tens of seconds, so following it would blur the first half minute. The
-       bitrate follows loss instead, the same way it does for the WebSocket. */
-    put(&s,
-        "a=fmtp:%d level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=%s\r\n",
-        o->pt, o->plid);
-    if (o->playout_ext) {
-        put(&s, "a=extmap:%d http://www.webrtc.org/experiments/rtp-hdrext/playout-delay\r\n",
-            o->playout_ext);
-    }
-    put(&s, "a=msid:espkvm screen\r\na=ssrc:%u cname:espkvm\r\n", (unsigned)a->ssrc);
-    put_candidates(&s, a);
-    if (o->has_audio && !o->audio_first) {
-        put_audio(&s, o, a);
+    put(&s, "\r\na=ice-lite\r\na=msid-semantic: WMS espkvm\r\n");
+    for (int i = 0; i < n; i++) {
+        if (o->order[i] == 'a') {
+            put_audio(&s, o, a);
+        } else if (o->order[i] == 'd') {
+            put_data(&s, o, a);
+        } else {
+            put_video(&s, o, a);
+        }
     }
     if (s.full) {
         return -1;
     }
     return (int)s.len;
 }
+

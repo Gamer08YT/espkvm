@@ -49,7 +49,7 @@
 
 static const char *const s_codec_choices[] = {"mjpeg", "h264"};
 static const char *const s_rec_subs_choices[] = {"off", "keys", "everything"};
-static const char *const s_edid_choices[] = {"full", "1080p30", "720p", "1024x768", "480p"};
+static const char *const s_edid_choices[] = {"full", "1080p30", "720p", "1024x768", "480p", "1080p50"};
 static const char *const s_mouse_choices[] = {"absolute", "relative"};
 static const char *const s_engage_choices[] = {"click", "hover"};
 /* Must match the layout ids in web/src/layouts.ts. New ones go on the end:
@@ -93,6 +93,7 @@ static const char *const s_btn_action_choices[] = {"nothing", "power", "power of
                                                    "Ethernet / WiFi"};
 /* Read by the console only; how long its vibration tick lasts on a phone. */
 static const char *const s_haptic_choices[] = {"light", "medium", "strong"};
+static const char *const s_touch_kbd_choices[] = {"console", "phone"};
 static const char *const s_netmode_choices[] = {"ethernet", "wifi", "ap", "auto"};
 static const char *const s_fallback_choices[] = {"keep_trying", "hotspot"};
 
@@ -271,9 +272,13 @@ static const kvm_setting_t s_settings[] = {
                 "lower, which is often what you want: a smaller picture encodes faster "
                 "and costs less bandwidth. \"1080p30\" offers that one mode alone, for a "
                 "source that refuses a list. \"480p\" offers 720x480 and nothing bigger, "
-                "for old consoles and TV boxes. Text modes stay on offer either way, so a "
-                "BIOS still comes through as text.",
-        .min = 0, .max = ENUM_MAX(s_edid_choices), .def = 0, .choices = s_edid_choices,
+                "for old consoles and TV boxes. \"1080p50\", the default, is \"full\" with "
+                "1920x1080@50 first: the target sends a frame every 20 ms instead of 33, "
+                "so the pointer shows up sooner, for a frame or two a second less. Only "
+                "boards with a rev 3.x chip and a TC358743 take 50 Hz; others get "
+                "\"full\". Text modes stay on offer either way, so a BIOS still comes "
+                "through as text.",
+        .min = 0, .max = ENUM_MAX(s_edid_choices), .def = 5, .choices = s_edid_choices,
         .requires_cap = KVM_CAP_EDID, .flags = KVM_SF_REBOOT,
     },
     {
@@ -1263,6 +1268,16 @@ static const kvm_setting_t s_settings[] = {
                 "at the top, or a tap of the right Ctrl key on its own, and go again a few "
                 "seconds after you leave them.",
         .def = 1, .requires_cap = -1,
+    },
+    {
+        .key = "ui_touch_kbd", .section = "ui", .group = "Touch controls", .type = KVM_VT_ENUM,
+        .title = "Keyboard button",
+        .help = "What the keyboard button under the picture opens in touch mode. "
+                "\"console\" is the console's own keyboard, with Ctrl, Alt, the F keys and "
+                "the arrows a phone's keyboard does not have. \"phone\" is the phone's own "
+                "keyboard, for typing text with its layouts and suggestions.",
+        .min = 0, .max = ENUM_MAX(s_touch_kbd_choices), .def = 0, .choices = s_touch_kbd_choices,
+        .requires_cap = -1,
     },
     {
         .key = "ui_hidden", .section = "ui", .group = "Buttons", .type = KVM_VT_STR,

@@ -67,6 +67,9 @@ CONFIG_SPIRAM_SPEED_200M=y
 # could not rebuild it. Anything that needs DMA-capable memory asks for
 # MALLOC_CAP_DMA explicitly, so it is unaffected by this threshold.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# No write-and-read-back test of all 32 MB at every start: 0.8 s of each boot,
+# and a fault it found would only be logged.
+CONFIG_SPIRAM_MEMTEST=n
 
 # Optimise for speed. The default is -Og, which left the capture and encode
 # path, the frame conversions and TLS all compiled for a debugger.

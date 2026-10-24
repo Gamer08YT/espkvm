@@ -30,12 +30,29 @@ Advertising a mode above the ceiling does not degrade gracefully: the source
 sends it, the CSI receiver never completes a frame, and the screen goes black.
 Raising the ceiling means raising the lane rate or dropping to 16 bits per
 pixel, not editing this file.
+
+    16 BITS PER PIXEL: THE "full16" PROFILE
+
+Boards that capture YUV422 (rev 3.x chips) send 16 bits a pixel. Then what
+counts is that the bridge gets each line out over CSI before the next one comes
+in: 1920 pixels x 16 bits over 2 lanes at 972 Mbit/s is 15.8 us, plus about
+1.5 us of packet overhead. 1920x1080@50 (CEA, 148.5 MHz) brings a line every
+17.8 us, so it fits; 1920x1080@60 brings one every 14.8 us and does not.
+
+1080p50 is the preferred mode of that profile ("1080p50" in the settings).
+The target draws and sends a frame every 20 ms instead of 33, so the pointer
+reaches the picture sooner; the encoder loses a frame or two a second to the
+extra capture traffic in PSRAM.
 """
 
 import sys
 
 # 2 MIPI lanes at 972 Mbit/s carrying RGB888: 1.944e9 / 24 = 81 Mpixel/s.
 CLOCK_CEILING_KHZ = 81_000
+# At 16 bits a pixel: a line must leave over CSI faster than lines come in.
+LANES = 2
+LANE_MBPS = 972
+CSI_LINE_OVERHEAD_US = 1.5
 
 # Known-good base EDID from the Waveshare/Geekworm HDMI-to-CSI adapter, as
 # shipped in p4kvm. It advertises 1920x1080@30 only. Everything below is
@@ -80,6 +97,7 @@ VIC_720x480p60_4_3 = 2
 VIC_720x480p60_16_9 = 3
 VIC_1280x720p60 = 4
 VIC_1920x1080p30 = 34
+VIC_1920x1080p50 = 31
 VIC_NATIVE = 0x80
 
 # --- Branding: how the target's OS names this "monitor" ----------------------
@@ -125,6 +143,8 @@ def dtd(clock_khz: int, hact: int, hbl: int, hfp: int, hsw: int,
 DTD_1280x720p60 = dtd(74250, 1280, 370, 110, 40, 720, 30, 5, 5, positive=True)
 DTD_1024x768p60 = dtd(65000, 1024, 320, 24, 136, 768, 38, 3, 6, positive=False)
 DTD_720x480p60 = dtd(27000, 720, 138, 16, 62, 480, 45, 9, 6, positive=False)  # CEA-861 VIC 2/3
+DTD_1920x1080p50 = dtd(148500, 1920, 720, 528, 44, 1080, 45, 4, 5, positive=True)  # CEA-861 VIC 31
+DTD_1920x1080p30 = dtd(74250, 1920, 280, 88, 44, 1080, 45, 4, 5, positive=True)  # CEA-861 VIC 34
 
 
 def checksum(block: bytes) -> int:
@@ -175,6 +195,12 @@ PROFILES = {
     "full": (None, True, 8, [VIC_1920x1080p30 | VIC_NATIVE, VIC_1280x720p60,
                              VIC_720x480p60_16_9, VIC_720x480p60_4_3, VIC_640x480p60],
              (1920, 1080)),
+    # "full" for a 16-bit capture: 1080p50 first, 1080p30 kept for a source
+    # that will not do 50.
+    "full16": (DTD_1920x1080p50, True, 15, [VIC_1920x1080p50 | VIC_NATIVE, VIC_1920x1080p30,
+                                            VIC_1280x720p60, VIC_720x480p60_16_9,
+                                            VIC_720x480p60_4_3, VIC_640x480p60],
+               (1920, 1080)),
     "720p": (DTD_1280x720p60, True, 8, [VIC_1280x720p60 | VIC_NATIVE,
                                         VIC_720x480p60_16_9, VIC_720x480p60_4_3,
                                         VIC_640x480p60], (1280, 720)),
@@ -184,6 +210,13 @@ PROFILES = {
     "480p": (DTD_720x480p60, False, 3, [VIC_720x480p60_16_9 | VIC_NATIVE, VIC_720x480p60_4_3,
                                         VIC_640x480p60], (720, 480)),
 }
+
+# The second detailed timing, where a profile has one worth offering.
+SECOND = {"full16": DTD_1920x1080p30}
+
+# Profiles for a 16-bit capture, held to the CSI line time instead of the
+# 24-bit pixel clock ceiling.
+SIXTEEN_BIT = {"full16"}
 
 # An EDID descriptor slot that says "nothing here", for a profile that has no
 # second timing to offer. Leaving the base's 1080p descriptor in place would
@@ -224,9 +257,10 @@ def build_profile(base: bytes, name: str) -> bytes:
 
     # The two detailed timings. The first is the preferred mode; the base's are
     # both 1920x1080@30, which is right for "full" and wrong for anything capped.
+    second = SECOND.get(name, DUMMY_DESCRIPTOR)
     if preferred is not None:
         e[54:72] = preferred
-        e[72:90] = DUMMY_DESCRIPTOR
+        e[72:90] = second
 
     # Monitor range descriptor at offset 108: cap the maximum pixel clock (units
     # of 10 MHz) so a source that reads the range instead of the mode list cannot
@@ -254,7 +288,11 @@ def build_profile(base: bytes, name: str) -> bytes:
     if preferred is not None:
         slots = dtds_in_extension(e)
         e[slots[0]:slots[0] + 18] = preferred
-        for off in slots[1:]:
+        rest = list(slots[1:])
+        if name in SECOND:
+            e[rest[0]:rest[0] + 18] = SECOND[name]
+            rest = rest[1:]
+        for off in rest:
             e[off:off + 18] = bytes(18)  # zero padding: no more timings here
 
     e[255] = checksum(bytes(e[128:256]))
@@ -301,7 +339,9 @@ def audit(name: str, edid: bytes) -> None:
         raise SystemExit(f"{name}: checksum is wrong")
 
     cap_w, cap_h = PROFILES.get(name, (None, None, None, None, (1920, 1080)))[4]
-    allowed_khz = min(CLOCK_CEILING_KHZ, edid[117] * 10_000)
+    sixteen = name in SIXTEEN_BIT
+    ceiling_khz = 10**9 if sixteen else CLOCK_CEILING_KHZ
+    allowed_khz = min(ceiling_khz, edid[117] * 10_000)
 
     for off in list((54, 72)) + list(dtds_in_extension(edid)):
         timing = read_dtd(edid, off)
@@ -309,16 +349,24 @@ def audit(name: str, edid: bytes) -> None:
             continue
         clock, w, h = timing
         where = "block 0" if off < 128 else "the extension"
-        if clock > CLOCK_CEILING_KHZ:
+        if clock > ceiling_khz:
             raise SystemExit(f"{name}: the timing at {off} ({where}) is {clock} kHz, "
                              f"above the {CLOCK_CEILING_KHZ} kHz the link carries")
+        if sixteen:
+            htotal = edid[off + 2] | ((edid[off + 4] >> 4) << 8)
+            htotal += edid[off + 3] | ((edid[off + 4] & 0x0F) << 8)
+            line_us = htotal * 1000 / clock
+            csi_us = w * 16 / LANES / LANE_MBPS + CSI_LINE_OVERHEAD_US
+            if csi_us > line_us:
+                raise SystemExit(f"{name}: the timing at {off} ({where}) brings a line every "
+                                 f"{line_us:.1f} us; CSI needs {csi_us:.1f} us at 16 bpp")
         if clock > allowed_khz:
             raise SystemExit(f"{name}: the timing at {off} ({where}) is {clock} kHz, "
                              f"above the {allowed_khz} kHz this profile's range allows")
         if w > cap_w or h > cap_h:
             raise SystemExit(f"{name}: the timing at {off} ({where}) is {w}x{h}, "
                              f"above the profile's cap of {cap_w}x{cap_h}")
-    if edid[117] * 10_000 > CLOCK_CEILING_KHZ:
+    if not sixteen and edid[117] * 10_000 > CLOCK_CEILING_KHZ:
         raise SystemExit(f"{name}: the range descriptor allows more than the link carries")
 
 
@@ -334,7 +382,7 @@ def c_array(name: str, data: bytes) -> str:
 EST1_MODES = [(0x80, "720x400@70"), (0x20, "640x480@60"), (0x01, "800x600@60")]
 EST2_MODES = [(0x80, "800x600@72"), (0x08, "1024x768@60")]
 VIC_NAMES = {1: "640x480@60", 2: "720x480@60 4:3", 3: "720x480@60 16:9",
-             4: "1280x720@60", 34: "1920x1080@30"}
+             4: "1280x720@60", 31: "1920x1080@50", 34: "1920x1080@30"}
 
 
 def describe(name: str, edid: bytes) -> str:
@@ -386,6 +434,7 @@ def main() -> int:
         "720p": build_profile(base, "720p"),
         "1024x768": build_profile(base, "1024x768"),
         "480p": build_profile(base, "480p"),
+        "full16": build_profile(base, "full16"),
     }
     for name, edid in profiles.items():
         audit(name, edid)
@@ -407,6 +456,8 @@ def main() -> int:
     print(" *   720p      the same list without 1080p, and 1280x720 preferred")
     print(" *   1024x768  everything up to 1024x768, which is also preferred")
     print(" *   480p      720x480 preferred, 640x480 and 720x400 text - old consoles")
+    print(" *   full16    \"full\" with 1920x1080@50 preferred (the \"1080p50\" setting),")
+    print(" *             for a 16-bit (YUV422) capture only")
     print(" *")
     print(" * The capped ones are not about what the link can carry - they are about")
     print(" * what the target should send. A smaller picture encodes faster, and on")
@@ -432,6 +483,8 @@ def main() -> int:
     print(c_array("tc358743_edid_1024x768", profiles["1024x768"]))
     print()
     print(c_array("tc358743_edid_480p", profiles["480p"]))
+    print()
+    print(c_array("tc358743_edid_full16", profiles["full16"]))
     return 0
 
 

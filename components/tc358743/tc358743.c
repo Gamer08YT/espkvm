@@ -722,6 +722,10 @@ static void edid_write_builtin(tc358743_t *d)
         bin = tc358743_edid_480p;
         what = "up to 720x480";
         break;
+    case TC358743_EDID_FULL_16BPP:
+        bin = tc358743_edid_full16;
+        what = "full mode list, 1080p50 preferred";
+        break;
     default:
         break;
     }
@@ -918,18 +922,42 @@ static uint16_t tc358743_read_hact_vact_htotal(tc358743_t *d, uint16_t *vact, ui
 }
 
 /*
- * FIFOCTL counts 32-bit words. If it is not below one line, the chip waits for
- * part of the next line before it sends this one, and frames come out short or
- * long - 720x480 UYVY is 360 words a line, under the default 374, and gave no
- * frames at all. Only such modes are changed; 7/8 of a line still starts late
- * enough not to run dry at 27 MHz.
+ * FIFOCTL counts 32-bit words: how much of a line the chip holds before it
+ * starts sending it over CSI.
+ *
+ * If it is not below one line, the chip waits for part of the next line before
+ * it sends this one, and frames come out short or long - 720x480 UYVY is 360
+ * words a line, under the default 374, and gave no frames at all. 7/8 of a line
+ * still starts late enough not to run dry at 27 MHz.
+ *
+ * The default 374 suits a line that comes in slower than CSI sends it, as at
+ * 1080p30: CSI must start late or it catches up and runs dry. 1080p50 at 16
+ * bits a pixel is the other way round - the line comes in in 12.9 us and takes
+ * 15.8 us to send - and waiting for 374 words overflowed the FIFO: a band of
+ * every line came out with pixels from further right (Function EV, 2026-10-24).
+ * When the line comes in faster than it goes out, CSI starts almost at once.
+ *
+ * @p frame_100us and @p vtotal (in half lines, as the chip counts it) give the
+ * line time; 0 when not known yet.
  */
-static void fit_fifo_level(tc358743_t *d, uint16_t hact)
+#define FIFO_LEVEL_FAST_IN 32u
+
+static void fit_fifo_level(tc358743_t *d, uint16_t hact, uint16_t htotal, uint16_t vtotal,
+                           uint32_t frame_100us)
 {
-    const uint32_t words = (uint32_t)hact * (d->csi_uyvy422 ? 16u : 24u) / 32u;
+    const uint32_t bpp = d->csi_uyvy422 ? 16u : 24u;
+    const uint32_t words = (uint32_t)hact * bpp / 32u;
     uint16_t level = d->cfg.fifo_level;
     if (words <= level) {
         level = (uint16_t)(words * 7u / 8u);
+    }
+    if (htotal > hact && vtotal >= 2u && frame_100us > 0u) {
+        const uint64_t line_ns = (uint64_t)frame_100us * 100000u / (vtotal / 2u);
+        const uint64_t in_ns = line_ns * hact / htotal;
+        const uint64_t out_ns = (uint64_t)hact * bpp * 1000u / (d->cfg.lanes * KVM_BOARD_MIPI_LANE_MBPS);
+        if (in_ns < out_ns && level > FIFO_LEVEL_FAST_IN) {
+            level = FIFO_LEVEL_FAST_IN;
+        }
     }
     if (level != d->fifo_set) {
         wr16(d, FIFOCTL, level);
@@ -964,13 +992,13 @@ esp_err_t tc358743_get_timings(tc358743_t *d, tc358743_timings_t *out)
     }
     out->sync = (st & TC358743_SYS_SYNC) != 0u;
     out->interlaced = (rd8(d, VI_STATUS1) & MASK_S_V_INTERLACE) != 0u;
-    if (out->sync && out->hact >= 320u) {
-        fit_fifo_level(d, out->hact);
-    }
     const uint32_t interval = ((uint32_t)(rd8(d, FV_CNT_HI) & 0x03u) << 8) | rd8(d, FV_CNT_LO);
     if (out->sync && interval > 0u) {
         const uint32_t hz = (10000u + interval / 2u) / interval;
         out->hz = hz <= 255u ? (uint8_t)hz : 0u;
+    }
+    if (out->sync && out->hact >= 320u) {
+        fit_fifo_level(d, out->hact, out->htotal, out->vtotal, interval);
     }
     /* A failed read gives zeros, which look like "no signal": not a reading. */
     return d->i2c_fails == fails ? ESP_OK : ESP_ERR_TIMEOUT;

@@ -10,6 +10,8 @@
  * here; how those pixels become bytes on the wire lives in the codec modules.
  */
 #include "capture_priv.h"
+#include "capture.h"
+#include "fps_gate.h"
 
 #include "sdkconfig.h"
 
@@ -27,6 +29,169 @@
 #include "esp_heap_caps.h"
 #include "kvm_bridge.h"
 #include "video_frame.h"
+
+/*
+ * Encoding a frame while it is still coming in (rev 3.x, H.264).
+ *
+ * A frame takes a whole source period to arrive - 33 ms at 30 Hz - and the
+ * encoder used to start only after its last line. The encoder reads the frame
+ * top to bottom, one macroblock row at a time, and at 1080p it is slower than
+ * the capture (36-40 ms against 20-33). So it can start on the frame the DMA is
+ * still writing, a few rows behind it, and never catch up. That takes most of a
+ * source period off the delay.
+ *
+ * The lead is two macroblock rows, or more where the encoder is not much slower
+ * than the capture (720p60: 16 ms each): enough that an encoder 25 % faster
+ * than its average still finishes behind the last line. Without an encode time
+ * measured yet, or with an interlaced source, frames are taken whole.
+ *
+ * Not on the M5Stack: its frames go through a byte reorder and a frame gate
+ * first. Not for MJPEG: the JPEG engine is faster than the capture.
+ */
+#define CAPTURE_EARLY_ENCODE (CAPTURE_DIRECT_ENCODE && !CAPTURE_YUV_SWAP)
+
+#if CAPTURE_EARLY_ENCODE
+#define EARLY_LEAD_LINES 32
+
+static esp_timer_handle_t s_wake_timer;
+static TaskHandle_t s_loop_task;
+
+static void wake_loop(void *arg)
+{
+    (void)arg;
+    xTaskNotifyGive(s_loop_task);
+}
+
+/* The tick is 10 ms; this waits to the microsecond. */
+static void sleep_until(int64_t t_us)
+{
+    const int64_t d = t_us - esp_timer_get_time();
+    if (d <= 50) {
+        return;
+    }
+    if (!s_wake_timer) {
+        s_loop_task = xTaskGetCurrentTaskHandle();
+        const esp_timer_create_args_t args = {.callback = wake_loop, .name = "cap_wake"};
+        if (esp_timer_create(&args, &s_wake_timer) != ESP_OK) {
+            s_wake_timer = NULL;
+            return;
+        }
+    }
+    (void)ulTaskNotifyTake(pdTRUE, 0); /* a stale wake from before */
+    if (esp_timer_start_once(s_wake_timer, (uint64_t)d) == ESP_OK) {
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+    }
+}
+
+/**
+ * When the encoder may start on the frame going into slot @p idx, and when the
+ * frame will be complete (@p landing_us); 0 when it should wait for the whole
+ * frame. The blanking is taken as 1/25 of the lines, which all the usual modes
+ * are close to.
+ */
+typedef struct {
+    int64_t period_us, active_us, blank_us, line_ns;
+} frame_timing_t;
+
+/* The mode's timing, from the status. The blanking is taken as 1/25 of the
+ * lines, which all the usual modes are close to. */
+static bool frame_timing(const capture_ctx_t *c, const kvm_video_status_t *st, frame_timing_t *t)
+{
+    if (st->input_hz == 0 || st->interlaced || c->vres == 0) {
+        return false;
+    }
+    const int64_t period_ns = 1000000000LL / st->input_hz;
+    t->period_us = period_ns / 1000;
+    t->line_ns = period_ns * 24 / ((int64_t)c->vres * 25);
+    t->active_us = t->line_ns * c->vres / 1000;
+    t->blank_us = t->period_us - t->active_us;
+    return true;
+}
+
+/*
+ * When the frame coming in now started arriving: the one after the frame that
+ * landed last. With the gate closed in between, the bridge waited for a frame
+ * start after it was opened again, so it is the first one from then. 0 when
+ * frames have stopped.
+ */
+static int64_t next_data_us(const frame_timing_t *t)
+{
+    int64_t d = capture_hw_last_landed_us() + t->blank_us;
+    const int64_t opened = capture_hw_gate_opened_us();
+    if (opened - d > 1000000) {
+        return 0;
+    }
+    while (d < opened) {
+        d += t->period_us;
+    }
+    return d;
+}
+
+/**
+ * When the encoder may start on the frame going into slot @p idx, when it
+ * started arriving (@p data_us) and when it will be complete (@p landing_us);
+ * 0 when it should wait for the whole frame.
+ */
+static int64_t early_start_us(const capture_ctx_t *c, int idx, int64_t *data_us, int64_t *landing_us,
+                              size_t *lead_bytes)
+{
+    kvm_video_status_t st;
+    capture_status_get(&st);
+    frame_timing_t t;
+    if (idx < 0 || st.encode_us == 0 || !frame_timing(c, &st, &t)) {
+        return 0;
+    }
+    int64_t lead_us = t.line_ns * EARLY_LEAD_LINES / 1000;
+    const int64_t catch_up_us = t.active_us - (int64_t)st.encode_us * 3 / 4;
+    if (catch_up_us > lead_us) {
+        lead_us = catch_up_us;
+    }
+    const int64_t d = next_data_us(&t);
+    if (lead_us >= t.active_us || d == 0) {
+        return 0;
+    }
+    *data_us = d;
+    *landing_us = d + t.active_us;
+    *lead_bytes = (size_t)(lead_us * 1000 / t.line_ns) * (c->frame_bytes / c->vres);
+    return d + lead_us;
+}
+
+/* A frame is coming in that has not been encoded yet: the loop need not wait
+ * for it to land. */
+static bool early_frame_coming(const capture_ctx_t *c, int64_t last_data_us)
+{
+    kvm_video_status_t st;
+    capture_status_get(&st);
+    frame_timing_t t;
+    return c->write_fb_idx >= 0 && frame_timing(c, &st, &t) && next_data_us(&t) > last_data_us;
+}
+
+/*
+ * The frame gate for early encode. When the source is so fast that the encoder
+ * takes every other frame anyway - 1080p50: 20 ms frames, 36 ms encodes - the
+ * frames in between only take memory time from it, and with them in the way it
+ * starts on a frame at whatever point it gets free. With the gate the bridge
+ * stays closed while it encodes and opens as it finishes, so it starts every
+ * frame it takes from the top, and no longer competes with the capture for
+ * PSRAM. On when half the source's rate is at least most of what the encoder
+ * manages; 1080p30 and 720p60 run without it.
+ */
+static void early_gate(bool want)
+{
+    static bool s_on;
+    if (want != s_on) {
+        s_on = want;
+        capture_hw_frame_gate_set(want);
+    }
+}
+
+static bool early_gate_wanted(void)
+{
+    kvm_video_status_t st;
+    capture_status_get(&st);
+    return (uint64_t)st.input_hz * st.encode_us >= 1700000u;
+}
+#endif
 
 /** vid_codec enum, in the order of s_codec_choices in the settings table. */
 enum { CODEC_CHOICE_MJPEG = 0, CODEC_CHOICE_H264 = 1 };
@@ -117,6 +282,12 @@ void capture_loop_run(capture_ctx_t *c)
     int64_t hdmi_recover_cooldown_until_us = 0;
     int64_t switch_retry_us = 0; /* after a refused codec switch */
     int64_t next_encode_us = 0; /* frame rate limit: when the next encode is due */
+#if CAPTURE_EARLY_ENCODE
+    /* When the frame last encoded early started arriving, so it is not taken
+     * twice; and whether the turn after an encode may skip waiting for a frame. */
+    int64_t early_data_us = 0;
+    bool early_next = false;
+#endif
     /* Set after anything that invalidates what clients are holding. */
     bool force_publish = true;
 
@@ -163,7 +334,17 @@ void capture_loop_run(capture_ctx_t *c)
             continue;
         }
 
-        if (xSemaphoreTake(c->csi_done_sem, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        /* Right after an early encode the next frame is usually coming in
+         * already; start on it instead of waiting for it to land. Once per
+         * encode, so the turns that skip a frame still wait for one. */
+        TickType_t frame_wait = pdMS_TO_TICKS(2000);
+#if CAPTURE_EARLY_ENCODE
+        if (early_next && early_frame_coming(c, early_data_us)) {
+            frame_wait = 0;
+        }
+        early_next = false;
+#endif
+        if (xSemaphoreTake(c->csi_done_sem, frame_wait) != pdTRUE && frame_wait != 0) {
             /* No signal is a normal state, not a fault: the target may simply be
              * off or asleep. Waiting quietly beats hammering the bridge with
              * hotplug cycles it cannot act on. */
@@ -282,33 +463,54 @@ void capture_loop_run(capture_ctx_t *c)
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
-        if (fps_max > 0) {
+        if (fps_max > 0 &&
+            !fps_gate_take(&next_encode_us, esp_timer_get_time(), 1000000 / fps_max)) {
+            continue;
+        }
+        int64_t landed_us = 0;
+        bool early = false;
+#if CAPTURE_EARLY_ENCODE
+        int64_t early_at_us = 0;
+        size_t early_lead_bytes = 0;
+        early_gate(codec == capture_codec_h264() && early_gate_wanted());
+        if (codec == capture_codec_h264()) {
+            /* The frame the DMA is writing now, if it may be started on. */
+            const int w = c->write_fb_idx;
+            int64_t data_us = 0;
+            early_at_us = early_start_us(c, w, &data_us, &landed_us, &early_lead_bytes);
+            if (early_at_us > 0 && data_us <= early_data_us) {
+                early_at_us = 0; /* that one was encoded already */
+            }
+            if (early_at_us > 0) {
+                portENTER_CRITICAL(&c->fb_lock);
+                early = (c->write_fb_idx == w || c->ready_fb_idx == w);
+                if (early) {
+                    c->held_fb_idx = w;
+                }
+                portEXIT_CRITICAL(&c->fb_lock);
+                if (early) {
+                    early_data_us = data_us;
+                }
+            }
+        }
+#endif
+        int hidx;
+        if (early) {
+            hidx = c->held_fb_idx;
+        } else {
             /*
-             * A schedule, not a gap since the last encode. Frames come with
-             * jitter, and a gap check dropped every frame that came a hair
-             * early: 60 Hz input with a 30 fps limit gave 25 fps. A frame up to
-             * a quarter interval early is taken; the schedule still steps by a
-             * whole interval, so the average stays at the limit.
+             * Take the newest complete frame and hold it for the whole encode:
+             * marking it held keeps the producer's get_new from ever targeting
+             * it, so the free-running CSI DMA cannot overwrite it mid-read.
              */
-            const int64_t interval_us = 1000000 / fps_max;
-            const int64_t now_us = esp_timer_get_time();
-            if (now_us < next_encode_us - interval_us / 4) {
+            portENTER_CRITICAL(&c->fb_lock);
+            hidx = c->ready_fb_idx;
+            c->held_fb_idx = hidx;
+            portEXIT_CRITICAL(&c->fb_lock);
+            if (hidx < 0) {
                 continue;
             }
-            next_encode_us = now_us - next_encode_us > interval_us ? now_us + interval_us
-                                                                   : next_encode_us + interval_us;
-        }
-        /*
-         * Take the newest complete frame and hold it for the whole encode: marking
-         * it held keeps the producer's get_new from ever targeting it, so the
-         * free-running CSI DMA cannot overwrite it mid-read. Released right after.
-         */
-        portENTER_CRITICAL(&c->fb_lock);
-        const int hidx = c->ready_fb_idx;
-        c->held_fb_idx = hidx;
-        portEXIT_CRITICAL(&c->fb_lock);
-        if (hidx < 0) {
-            continue;
+            landed_us = capture_hw_fb_landed_us(hidx);
         }
         if (!capture_park_frame_begin()) {
             /* A restart is coming: start nothing the DMA would be cut off in. */
@@ -319,21 +521,35 @@ void capture_loop_run(capture_ctx_t *c)
             continue;
         }
         void *src = c->fb[hidx];
-        {
-            const int64_t landed = capture_hw_fb_landed_us(hidx);
-            video_frame_set_source_time(landed);
-            if (landed > 0) {
-                capture_status_add_wait((uint32_t)(esp_timer_get_time() - landed));
+#if CAPTURE_EARLY_ENCODE
+        if (early) {
+            sleep_until(early_at_us);
+            /* The timing above is worked out, not seen: blanking is taken as
+             * 1/25 of the lines. The DMA's own write position settles it - the
+             * lead must be in the buffer before the encoder reads any of it. A
+             * frame period at most. */
+            const int64_t give_up_us = esp_timer_get_time() + (landed_us - early_at_us);
+            while (capture_hw_dma_written(hidx) < early_lead_bytes && esp_timer_get_time() < give_up_us) {
+                sleep_until(esp_timer_get_time() + 300);
             }
         }
-
-        ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
+#endif
+        video_frame_set_source_time(landed_us);
+        if (landed_us > 0) {
+            /* Early frames start before they land: no wait at all. */
+            const int64_t waited = esp_timer_get_time() - landed_us;
+            capture_status_add_wait(waited > 0 ? (uint32_t)waited : 0u);
+        }
 
         /* The frame is held and in cache: the one moment it can be read as text
          * without paying for either. Costs a few hundred reads unless this is a
-         * text mode that has stopped moving. */
-        capture_screentext_tick(c, src);
-        capture_flat_tick(c, src);
+         * text mode that has stopped moving. A frame still coming in is read
+         * after its encode instead. */
+        if (!early) {
+            ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
+            capture_screentext_tick(c, src);
+            capture_flat_tick(c, src);
+        }
 
 #if CAPTURE_YUV_SWAP
         /*
@@ -368,10 +584,31 @@ void capture_loop_run(capture_ctx_t *c)
             capture_snapshot_tick(c, src);
         }
 #else
-        capture_snapshot_tick(c, src);
+        if (!early) {
+            capture_snapshot_tick(c, src);
+        }
 #endif
 
         esp_err_t ee = codec->encode(c, src, force_publish);
+#if CAPTURE_EARLY_ENCODE
+        if (early) {
+            /* Nearly always landed by now: the encoder is the slower of the
+             * two. If not, the readers skip this one. */
+            portENTER_CRITICAL(&c->fb_lock);
+            const bool landed = c->write_fb_idx != hidx;
+            portEXIT_CRITICAL(&c->fb_lock);
+            if (landed) {
+                ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
+                capture_screentext_tick(c, src);
+                capture_flat_tick(c, src);
+                capture_snapshot_tick(c, src);
+            }
+            early_next = true;
+            /* Let the next frame through from its start while the loop comes
+             * round; it must not wait behind a closed gate. */
+            capture_hw_frame_gate_open();
+        }
+#endif
         if (ee == ESP_OK) {
             force_publish = false;
         } else if (codec != capture_codec_mjpeg() &&

@@ -13,3 +13,7 @@ cc -std=c11 -Wall -Wextra -O2 -I "$here/.." \
    "$here/test_h264_sps.c" "$here/../h264_sps.c" -o "$out/test_h264_sps"
 "$out/test_h264_sps"
 rm -rf "$out"
+out=$(mktemp -d)
+cc -std=c11 -Wall -Wextra -O2 -I "$here/.." "$here/test_fps_gate.c" -o "$out/test_fps_gate"
+"$out/test_fps_gate"
+rm -rf "$out"

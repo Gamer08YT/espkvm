@@ -59,9 +59,33 @@ to carry MJPEG at all, not for smoothness.
 
 **That last line is about rev v1.3 silicon only.** On rev 3.x the capture hands
 the encoder YUV422 directly, the PPA step goes away, and 1080p H.264 runs at
-26-27 fps (59 at 720p60) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
+25-27 fps (25 at the default 1080p50, 27 at 1080p30; 59 at 720p60) - see the frame-rate table in [HOW-IT-WORKS.md](HOW-IT-WORKS.md#video). Numbers quoted
 from this page have been read as the project's H.264 speed more than once; they
 are the speed of the board at the top of it.
+
+### 1080p50 over two CSI lanes, and the bridge's FIFO
+
+At 16 bits a pixel (YUV422, rev 3.x) two lanes at 972 Mbit/s carry 121
+Mpixel/s, and what decides a mode is the line time, not the pixel clock: the
+TC358743 must send each line over CSI before the next one has filled its FIFO.
+A 1920-pixel line takes 15.8 us to send, plus about 1.5 us of packet overhead.
+1080p50 (CEA, 148.5 MHz) brings a line every 17.8 us: it fits. 1080p60 brings one
+every 14.8 us: it does not.
+
+The FIFO start level (FIFOCTL, 32-bit words) has to follow. The default 374 is
+right for 1080p30, where a line comes in in 25.8 us and goes out in 15.8: CSI
+must start late or it catches up and sends the FIFO's stale contents. At 1080p50
+it is the other way round - the line comes in in 12.9 us - and waiting for 374
+words overflowed the FIFO: every line came out with a band of pixels from further
+right in it, which on a plain wallpaper looked like a square pasted on the
+screen. The driver now starts CSI at 32 words when the line comes in faster than
+it goes out (`fit_fifo_level()` in tc358743.c).
+
+Capturing every frame of 1080p50 costs the encoder 4 ms a frame (36 -> 40 at
+1080p): the capture writes 207 MB/s into PSRAM instead of 124, and the encoder
+is bound by PSRAM. The encoder only takes every other frame anyway, so the CSI
+bridge is closed while it encodes (the frame gate that the M5Stack board uses
+too) and the encode is back at 36 ms.
 
 ### The H.264 encoder waits on PSRAM
 

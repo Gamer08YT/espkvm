@@ -13,6 +13,7 @@ idf_component_register(
         "capture_flat_scan.c"
         "capture_snapshot.c"
         "h264_probe.c"
+        "h264_ref_pool.c"
         "h264_sps.c"
         "video_frame.c"
     INCLUDE_DIRS "include"
@@ -44,3 +45,6 @@ idf_component_register(
 # capture.c parks the CSI DMA before every deliberate restart; see the comment
 # on __wrap_esp_restart there.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart")
+# h264_ref_pool.c keeps the encoder's reference block across rebuilds; see there.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_h264_aligned_malloc"
+                                                 "-Wl,--wrap=heap_caps_free")

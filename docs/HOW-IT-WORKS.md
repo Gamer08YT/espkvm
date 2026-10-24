@@ -66,7 +66,7 @@ Measured at 1080p, on both silicon revisions:
 | | MJPEG | H.264 |
 |---|---|---|
 | Frame rate, Waveshare ESP32-P4-ETH (rev v1.3) | 20 fps | ~7 fps |
-| Frame rate, Function EV (rev v3.2) | 23 fps | 26-27 fps |
+| Frame rate, Function EV (rev v3.2) | 23 fps | 25 fps at 1080p50, 27 at 1080p30 |
 | Idle screen | 0 kbit/s (unchanged frames are dropped) | 170 kbit/s |
 | Screen in motion | 8.5 Mbit/s | ~500 kbit/s |
 | Chip temperature at full load | 46 &deg;C (rev v1.3) | 34 &deg;C (rev v3.2) |
@@ -93,6 +93,8 @@ On revision 3.x there is no detour: capture hands the encoder YUV422 and it take
 it as it is. H.264 went from ~7 to 22-24 fps at 1080p, and 28 at 720p - as fast
 as MJPEG, at a fraction of the bandwidth, and cooler. From 0.69.0 the PSRAM runs
 at 250 MHz instead of 200, which only rev 3.x allows, and 1080p goes to 26-27 fps.
+From 0.70.0 the target sends 1080p50 by default: 25 fps, with much less delay
+(see [How long it takes](#how-long-it-takes)).
 From 0.69.1 the frame rate limit is 60 by default, and 720p from a 60 Hz source
 runs at 59. On the older silicon the
 conversion and the encode at least overlap now instead of running one after the
@@ -151,8 +153,35 @@ way out - it sends movement, not position.
 The Video readout (click the video figures in the status
 bar) shows how long a frame spends in the device and in this browser, and
 "Measure the delay" times the whole way round - pointer moved on the target until
-it shows here. On a Function EV at 1080p: about 160 ms with MJPEG, and 118 ms with H.264 over
-WebRTC (0.69.0).
+it shows here. On a Function EV at 1080p: about 160 ms with MJPEG, and about
+60 ms with H.264 over WebRTC at 1080p50, the default.
+
+Most of it is waiting for a whole frame, twice: the target draws and sends one
+every 33 ms at 30 Hz, and the device used to start encoding only after the last
+line had arrived. On rev 3.x chips the H.264 encoder now starts on a frame while
+it is still coming in. It reads the frame top to bottom, a 16-line row at a
+time, and at 1080p it is slower than the capture, so it starts two rows behind
+the incoming lines and never catches up (where it is nearly as fast, at 720p60,
+it starts later, by as much as it could gain). The text reader and the
+flat-screen check look at the frame after its encode instead of before.
+
+| H.264, Function EV, mouse to picture | before | now |
+|---|---|---|
+| 1080p30 | 123 ms | 86 ms |
+| 1080p50 (the default EDID profile on these boards) | 108 ms | 58 ms |
+| 720p60 | 54 ms | 41 ms |
+
+Measured by moving the pointer over the control socket and timing the first
+H.264 frame that shows it, so the browser's decoding is not in these.
+
+At 1080p50 the encoder takes every other frame: 36 ms an encode against 20 ms
+frames. The frames in between are kept out of memory altogether - the CSI bridge
+is closed while the encoder works and opened as it finishes - so the encoder
+starts each frame it takes from the top and does not share PSRAM with frames
+nobody encodes. 25 frames a second, against 27 at 1080p30. Before starting, the
+encoder also checks how far the DMA has written into the buffer, so a mode whose
+timing differs from the estimate cannot make it read lines that have not
+arrived.
 
 ## Target OS
 

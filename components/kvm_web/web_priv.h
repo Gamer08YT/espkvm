@@ -48,6 +48,9 @@ void serial_api_drop(int fd);
 
 /** The WebSocket handshake check every socket here goes through (origin, session). */
 esp_err_t kvm_web_ws_pre_handshake(httpd_req_t *req);
+
+/** A message from a WebRTC data channel: see http_server.c. */
+void kvm_web_webrtc_input(const uint8_t owner[32], const uint8_t *msg, size_t len);
 /** One binary frame to a WebSocket, under the lock every TLS write takes. */
 esp_err_t kvm_web_ws_send_binary(int fd, const uint8_t *data, size_t len);
 /** The agent_api switch for the machine-facing API; on false *out holds the reply. */

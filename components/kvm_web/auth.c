@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -146,26 +147,46 @@ static void unlock(void)
  */
 #define MAX_WS_SOCKETS 8
 static int s_ws_authed[MAX_WS_SOCKETS] = {-1, -1, -1, -1, -1, -1, -1, -1};
+/* The sign-in each one was opened under, as kvm_auth_session_of() gives it. */
+static uint8_t s_ws_session[MAX_WS_SOCKETS][32];
 
-void kvm_auth_mark_socket(int fd)
+void kvm_auth_mark_socket(int fd, const uint8_t session[32])
 {
     if (fd < 0) {
         return;
     }
     lock();
-    for (int i = 0; i < MAX_WS_SOCKETS; i++) {
+    int slot = -1;
+    for (int i = 0; i < MAX_WS_SOCKETS && slot < 0; i++) {
         if (s_ws_authed[i] == fd) {
-            unlock();
-            return;
+            slot = i;
         }
     }
-    for (int i = 0; i < MAX_WS_SOCKETS; i++) {
+    for (int i = 0; i < MAX_WS_SOCKETS && slot < 0; i++) {
         if (s_ws_authed[i] < 0) {
-            s_ws_authed[i] = fd;
+            slot = i;
+        }
+    }
+    if (slot >= 0) {
+        s_ws_authed[slot] = fd;
+        memcpy(s_ws_session[slot], session, 32);
+    }
+    unlock();
+}
+
+bool kvm_auth_socket_session(int fd, uint8_t out[32])
+{
+    bool found = false;
+    lock();
+    for (int i = 0; i < MAX_WS_SOCKETS && fd >= 0; i++) {
+        if (s_ws_authed[i] == fd) {
+            memcpy(out, s_ws_session[i], 32);
+            found = true;
             break;
         }
     }
     unlock();
+    return found;
 }
 
 void kvm_auth_forget_socket(int fd)
@@ -1657,7 +1678,10 @@ void kvm_auth_register(httpd_handle_t server)
  * Wiping the rest would take a device that is merely locked and make it blank,
  * which is the opposite of a recovery.
  */
-#define RESET_WINDOW_MS 8000
+/* The window opens about 1.6 s after the reset, so 4 s leaves time to let go of
+ * reset, find the button and hold it for RESET_HOLD_MS. It was 8 s, and every
+ * power-on with a password set waited all of it. */
+#define RESET_WINDOW_MS 4000
 #define RESET_HOLD_MS 1500
 #define RESET_POLL_MS 50
 
@@ -1710,6 +1734,22 @@ void kvm_auth_check_reset_button(kvm_auth_reset_ui_cb_t ui)
      * given a password walks straight past it.
      */
     if (!password_stored()) {
+        return;
+    }
+    /*
+     * The gesture starts with the reset button or the power, so the window is
+     * only open after those. A restart the firmware made itself - an update, a
+     * setting that needs one, a crash - has nobody at the button, and waiting
+     * cost it 8 of its 14 seconds to a picture.
+     */
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+    case ESP_RST_EXT:
+    case ESP_RST_BROWNOUT:
+    case ESP_RST_PWR_GLITCH:
+    case ESP_RST_UNKNOWN:
+        break;
+    default:
         return;
     }
 

@@ -191,10 +191,21 @@ void capture_screentext_init(void);
 esp_err_t capture_hw_hdmi_recover(capture_ctx_t *c);
 /** Frames arrive again: the next recovery starts its count from one. */
 void capture_hw_frames_flowing(void);
-/** Let the next frame through the CSI bridge (M5Stack: it is closed between frames). */
+/** Let the next frame through the CSI bridge (closed between frames while the gate is on). */
 void capture_hw_frame_gate_open(void);
+/** Close the bridge as each frame lands, from now on (true) or no longer (false). */
+void capture_hw_frame_gate_set(bool on);
+/** esp_timer time the gate was last opened. */
+int64_t capture_hw_gate_opened_us(void);
+/** esp_timer time the last frame landed. */
+int64_t capture_hw_last_landed_us(void);
+/** Bytes the CSI DMA has written into ring slot @p idx of the frame coming in;
+ *  the whole frame once it has landed. */
+size_t capture_hw_dma_written(int idx);
 /** esp_timer time ring slot @p idx last landed from the bridge. */
 int64_t capture_hw_fb_landed_us(int idx);
+/** esp_timer time ring slot @p idx was handed to the DMA, at the end of the frame before. */
+int64_t capture_hw_fb_started_us(int idx);
 
 /** Poll the bridge for signal state and resolution changes (200 ms cadence). */
 void capture_monitor_start(capture_ctx_t *c);

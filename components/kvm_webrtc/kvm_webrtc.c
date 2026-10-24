@@ -36,6 +36,7 @@
 #include "kvm_audio.h"
 #include "kvm_caps.h"
 #include "rtp_h264.h"
+#include "sctp.h"
 #include "sdp.h"
 #include "sps_patch.h"
 #include "srtp.h"
@@ -66,8 +67,11 @@ static const char *TAG = "webrtc";
 /* The receive task's longest sleep: a closed session is freed within this,
    and a DTLS retransmission timer is never later than this. */
 #define TICK_MS 50
+/* The longest a data channel packet waits for its acknowledgement. */
+#define SACK_DELAY_US (50 * 1000LL)
 
-#define RX_STACK (10 * 1024)
+/* With a datagram and a data channel record on it, next to mbedTLS. */
+#define RX_STACK (12 * 1024)
 #define TX_STACK 4096
 #define AU_STACK 3072
 #define RX_PRIO 5
@@ -132,7 +136,13 @@ typedef struct {
     uint32_t audio_ts0; /* random start, as RFC 3550 asks */
     srtp_ctx_t atx;
 
-    uint32_t frames, pkts, resent, plis, drops, audio_pkts;
+    /* The data channel, when the offer had one: SCTP in DTLS records, only
+       ever received (see sctp.h). */
+    bool data;
+    sctp_assoc_t sctp;
+    int64_t sack_us; /* when the last SCTP answer went out */
+
+    uint32_t frames, pkts, resent, plis, drops, audio_pkts, inputs;
 } sess_t;
 
 static sess_t s_sess[MAX_SESSIONS];
@@ -148,6 +158,7 @@ static wr_cert_t s_cert;
 static mbedtls_ssl_config s_conf;
 static volatile bool s_ready;
 static kvm_webrtc_owner_alive_fn s_alive;
+static kvm_webrtc_input_fn s_input;
 static uint32_t s_next_id = 1;
 
 static void lock(void)
@@ -246,9 +257,9 @@ static void session_free(sess_t *s)
     heap_caps_free(s->pkt);
     ESP_LOGI(TAG,
              "session %u closed: %u frames, %u packets, %u resent, %u PLIs, %u dropped, "
-             "%u audio packets",
+             "%u audio packets, %u inputs",
              (unsigned)s->id, (unsigned)s->frames, (unsigned)s->pkts, (unsigned)s->resent,
-             (unsigned)s->plis, (unsigned)s->drops, (unsigned)s->audio_pkts);
+             (unsigned)s->plis, (unsigned)s->drops, (unsigned)s->audio_pkts, (unsigned)s->inputs);
     memset(s, 0, sizeof(*s));
     video_frame_viewer_leave();
 }
@@ -379,6 +390,16 @@ static void dtls_done(sess_t *s)
     xSemaphoreGive(s_media);
 }
 
+static void on_channel(void *ctx, uint16_t stream, uint32_t ppid, const uint8_t *data, size_t len)
+{
+    sess_t *s = ctx;
+    const kvm_webrtc_input_fn fn = s_input;
+    if (stream == 0 && ppid == SCTP_PPID_BINARY && fn) {
+        s->inputs++;
+        fn(s->owner, data, len);
+    }
+}
+
 static void dtls_step(sess_t *s)
 {
     if (s->st == ST_DTLS) {
@@ -392,11 +413,26 @@ static void dtls_step(sess_t *s)
         return;
     }
     if (s->st == ST_MEDIA) {
-        /* Nothing is expected over DTLS once SRTP runs but an alert. */
-        uint8_t sink[64];
-        const int r = mbedtls_ssl_read(&s->ssl, sink, sizeof(sink));
-        if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
-            session_kill(s, "the browser closed it");
+        /* Over DTLS once SRTP runs: the data channel's SCTP, one packet a
+           record, or an alert. */
+        uint8_t rec[DGRAM_MAX], reply[256];
+        for (;;) {
+            const int r = mbedtls_ssl_read(&s->ssl, rec, sizeof(rec));
+            if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+                session_kill(s, "the browser closed it");
+                return;
+            }
+            if (r <= 0) {
+                return;
+            }
+            if (!s->data) {
+                continue;
+            }
+            const size_t n = sctp_input(&s->sctp, rec, (size_t)r, reply, sizeof(reply), on_channel, s);
+            if (n > 0) {
+                (void)mbedtls_ssl_write(&s->ssl, reply, n);
+                s->sack_us = esp_timer_get_time();
+            }
         }
     }
 }
@@ -581,6 +617,16 @@ static void housekeeping(void)
         }
         if (s->st == ST_DTLS && timer_get(s) == 2) {
             dtls_step(s); /* retransmit, or give up */
+        }
+        /* The data channel's acknowledgements, held back so a stream of
+           moves does not cost a packet back for each (see sctp.h). */
+        if (s->st == ST_MEDIA && s->data && s->sctp.unacked && now - s->sack_us >= SACK_DELAY_US) {
+            uint8_t sack[64];
+            const size_t n = sctp_sack(&s->sctp, sack, sizeof(sack));
+            if (n > 0) {
+                (void)mbedtls_ssl_write(&s->ssl, sack, n);
+            }
+            s->sack_us = now;
         }
     }
 }
@@ -1029,6 +1075,10 @@ esp_err_t kvm_webrtc_offer(const char *offer, const uint8_t owner[32], char **an
     n.rtp.pt = (uint8_t)o->pt;
     n.rtp.max_payload = RTP_PAYLOAD;
     n.rtp.playout_ext = (uint8_t)o->playout_ext;
+    if (o->has_data) {
+        n.data = true;
+        sctp_init(&n.sctp, 5000, esp_random(), esp_random());
+    }
     if (o->has_audio) {
         n.audio = true;
         n.audio_pt = (uint8_t)o->audio_pt;
@@ -1112,4 +1162,9 @@ int kvm_webrtc_count(void)
     }
     unlock();
     return n;
+}
+
+void kvm_webrtc_set_input(kvm_webrtc_input_fn fn)
+{
+    s_input = fn;
 }

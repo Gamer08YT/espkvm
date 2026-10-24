@@ -4,7 +4,8 @@
  *
  * Reading a browser's SDP offer and writing the answer, for exactly one case:
  * the browser receives one H.264 video stream from the device, and optionally
- * one Opus audio stream bundled with it. Any other offer is refused.
+ * one Opus audio stream and one data channel bundled with it. Any other offer
+ * is refused.
  */
 #pragma once
 
@@ -42,8 +43,15 @@ typedef struct {
     bool audio_first;
     char audio_mid[SDP_MID_MAX];
     int audio_pt;
-    /* m-lines in the offer: one video, at most one audio. */
+    /* The data channel m-line, when the offer has one: its mid and the SCTP
+       port the browser named (5000 when it named none). */
+    bool has_data;
+    char data_mid[SDP_MID_MAX];
+    int sctp_port;
+    /* m-lines in the offer: one video, at most one audio and one data. The
+       answer keeps their order: 'v', 'a', 'd'. */
     int m_count;
+    char order[3];
 } sdp_offer_t;
 
 typedef struct {

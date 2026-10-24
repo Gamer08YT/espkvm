@@ -54,6 +54,8 @@ static portMUX_TYPE s_frames_mu = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_frames_total;
 static int64_t s_last_frame_us;
 static int64_t s_fb_landed_us[CAPTURE_FB_COUNT];
+/* When the DMA was handed each slot: the frame before it had just ended. */
+static int64_t s_fb_started_us[CAPTURE_FB_COUNT];
 static i2c_master_bus_handle_t s_i2c_bus; /* shared with an optional status OLED */
 
 /*
@@ -322,36 +324,50 @@ static void capture_configure_p4_csi_bridge(uint32_t hres, uint32_t vres)
 #endif
 }
 
-#if CAPTURE_YUV_SWAP
 /*
+ * The frame gate: the CSI bridge closed as each frame lands, so frames nobody
+ * will encode never reach PSRAM.
+ *
  * On the M5Stack board the bridge sends 60 frames a second and every one of
  * them lands in PSRAM - about 250 MB/s at 1080p, most of what the memory can
- * do - while the encoder takes 5 to 8. So the CSI bridge is closed as each
- * frame lands, and opened again once the capture loop has taken it, so the
- * next one lands while this one is encoded. The PHY and the LT6911D are not
- * touched: only the gate between the receiver and the DMA. Opened mid-frame,
- * the bridge waits for the next frame start: the picture stays whole.
- * Measured at 1080p60: H.264 5.5 -> 7.2 fps, MJPEG 9.6 -> 11.0; at 1080p30
- * H.264 7.0 -> 7.75.
+ * do - while the encoder takes 5 to 8. So the gate is closed as each frame
+ * lands, and opened again once the capture loop has taken it, so the next one
+ * lands while this one is encoded. The PHY and the LT6911D are not touched:
+ * only the gate between the receiver and the DMA. Opened mid-frame, the bridge
+ * waits for the next frame start: the picture stays whole. Measured at
+ * 1080p60: H.264 5.5 -> 7.2 fps, MJPEG 9.6 -> 11.0; at 1080p30 H.264 7.0 ->
+ * 7.75. Only above 720p there: the loop is fast (MJPEG 40 ms a frame), and
+ * waiting for the next frame to start costs more than the memory saves - MJPEG
+ * 720p60 fell from 19 to 12 fps with the gate.
+ *
+ * Elsewhere the capture loop turns it on and off itself (capture_loop.c,
+ * early encode at 1080p50).
  */
 static volatile bool s_gate_closed;
-/* Only above 720p. There the loop is fast (MJPEG 40 ms a frame), and waiting
- * for the next frame to start costs more than the memory saves: MJPEG 720p60
- * fell from 19 to 12 fps with the gate. */
-static bool s_gate_on;
+static volatile bool s_gate_on;
+static volatile int64_t s_gate_opened_us;
 
 void capture_hw_frame_gate_open(void)
 {
     if (s_gate_closed) {
+        s_gate_opened_us = esp_timer_get_time();
         s_gate_closed = false;
         MIPI_CSI_BRIDGE.csi_en.csi_brg_en = 1;
     }
 }
-#else
-void capture_hw_frame_gate_open(void)
+
+void capture_hw_frame_gate_set(bool on)
 {
+    s_gate_on = on;
+    if (!on) {
+        capture_hw_frame_gate_open();
+    }
 }
-#endif
+
+int64_t capture_hw_gate_opened_us(void)
+{
+    return s_gate_opened_us;
+}
 
 static bool IRAM_ATTR cam_on_get_new(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t *trans, void *ud)
 {
@@ -372,6 +388,9 @@ static bool IRAM_ATTR cam_on_get_new(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans
         }
     }
     c->write_fb_idx = pick;
+    if (pick >= 0) {
+        s_fb_started_us[pick] = esp_timer_get_time();
+    }
     portEXIT_CRITICAL_ISR(&c->fb_lock);
     trans->buffer = pick >= 0 ? c->fb[pick] : c->drop_fb;
     trans->buflen = c->frame_bytes;
@@ -402,7 +421,6 @@ static bool IRAM_ATTR cam_on_done(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t 
             c->ready_fb_idx = idx;
             portEXIT_CRITICAL_ISR(&c->fb_lock);
             c->done_fb = trans->buffer;
-#if CAPTURE_YUV_SWAP
             /* Close the bridge until the loop wants the next frame; see
              * capture_hw_frame_gate_open(). The DMA is already set up for the
              * next buffer and waits. */
@@ -410,7 +428,6 @@ static bool IRAM_ATTR cam_on_done(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_t 
                 MIPI_CSI_BRIDGE.csi_en.csi_brg_en = 0;
                 s_gate_closed = true;
             }
-#endif
         }
     }
     BaseType_t high_task_woken = pdFALSE;
@@ -462,8 +479,10 @@ static esp_err_t csi_create(capture_ctx_t *c, uint32_t hres, uint32_t vres)
     ESP_RETURN_ON_ERROR(esp_cam_new_csi_ctlr(&csi_cfg, &s_cam), CAPTURE_LOG_TAG, "csi ctlr");
 #if CAPTURE_YUV_SWAP
     s_gate_on = hres * vres > 1280u * 720u;
-    s_gate_closed = false;
+#else
+    s_gate_on = false;
 #endif
+    s_gate_closed = false;
 
     esp_cam_ctlr_evt_cbs_t cbs = {
         .on_get_new_trans = cam_on_get_new,
@@ -608,8 +627,14 @@ capture_ctx_t *capture_hw_init_start(void)
         ESP_LOGE(CAPTURE_LOG_TAG, "bridge detect failed: %s", esp_err_to_name(probe_err));
         return NULL;
     }
-    /* The setting's choices are in the same order as the driver's enum. */
-    const int32_t edid_choice = kvm_setting_int("edid_prof");
+    /* The setting's choices are in the same order as the driver's enum. Only
+     * a 16-bit capture can take 1080p50 (see tools/gen_edid.py), the default;
+     * a 24-bit one offered it would show nothing, so it gets "full". */
+    int32_t edid_choice = kvm_setting_int("edid_prof");
+    if (edid_choice == KVM_BRIDGE_EDID_FULL_16BPP && capture_csi_bpp() != 16) {
+        ESP_LOGI(CAPTURE_LOG_TAG, "EDID 1080p50 needs a 16-bit capture; offering \"full\"");
+        edid_choice = KVM_BRIDGE_EDID_FULL;
+    }
     (void)kvm_bridge_set_edid_profile(&s_cap.bridge, (kvm_bridge_edid_profile_t)edid_choice);
     if (s_cap.bridge.ops->set_edid_profile) {
         kvm_cap_report(KVM_CAP_EDID, true, NULL);
@@ -1157,4 +1182,40 @@ void capture_frame_counter(uint32_t *frames, int64_t *last_us)
 int64_t capture_hw_fb_landed_us(int idx)
 {
     return (idx >= 0 && idx < CAPTURE_FB_COUNT) ? s_fb_landed_us[idx] : 0;
+}
+
+int64_t capture_hw_fb_started_us(int idx)
+{
+    return (idx >= 0 && idx < CAPTURE_FB_COUNT) ? s_fb_started_us[idx] : 0;
+}
+
+int64_t capture_hw_last_landed_us(void)
+{
+    portENTER_CRITICAL(&s_frames_mu);
+    const int64_t t = s_last_frame_us;
+    portEXIT_CRITICAL(&s_frames_mu);
+    return t;
+}
+
+size_t capture_hw_dma_written(int idx)
+{
+    capture_ctx_t *c = &s_cap;
+    if (idx < 0 || idx >= CAPTURE_FB_COUNT) {
+        return 0;
+    }
+    /* The GDMA channel reading the CSI bridge; its destination address moves
+     * along as it writes (the stall report above reads it the same way). */
+    for (unsigned ch = 0; ch < 4; ++ch) {
+        if (DW_GDMA.ch[ch].sar0.val != MIPI_CSI_BRG_MEM_BASE) {
+            continue;
+        }
+        const uint32_t dst = DW_GDMA.ch[ch].dar0.val;
+        const uintptr_t base = (uintptr_t)c->fb[idx];
+        if (dst >= base && dst - base <= c->frame_bytes) {
+            return dst - base;
+        }
+        break;
+    }
+    /* Not this slot: still waiting to start, or landed. */
+    return c->write_fb_idx == idx ? 0 : c->frame_bytes;
 }

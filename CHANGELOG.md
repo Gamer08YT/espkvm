@@ -5,6 +5,50 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [0.70.0] - 2026-10-24
+
+### Added
+- EDID profile "1080p50", the new default. The target sends 1080p at 50 Hz
+  instead of 30, a frame every 20 ms instead of 33, so the pointer shows up
+  sooner. The device lets through only the frames it encodes, every other
+  one, so the encoder starts each of them from the top and the extra frames
+  do not take its memory time: 25 frames a second instead of 27. Only boards
+  with a rev 3.x chip and a TC358743 take 50 Hz. The others get "full", as
+  before, and "full" with 1080p30 stays a choice.
+- Pointer moves go over WebRTC as well, on a data channel that never resends.
+  On a lossy link a lost packet costs one move. On the WebSocket every move
+  behind it waited. Clicks, the wheel and keys stay on the WebSocket.
+
+### Changed
+- Less delay with H.264 on rev 3.x chips: the encoder starts on a frame while
+  it is still coming in, a few lines behind it, instead of after its last
+  line. From mouse to picture on the Function EV: 1080p30 from 123 to 86 ms,
+  720p60 from 54 to 41 ms, and 58 ms at 1080p50. The frame rate stays the
+  same.
+- The console sends a pointer move as soon as the mouse reports it, not at the
+  next screen refresh: up to 16 ms sooner in Chrome and Edge.
+- On rev 3.x chips the H.264 encoder plans its bitrate for the frame rate it
+  actually reaches, so at 1080p50 (25 frames a second out) a frame gets the
+  bits it should.
+- Full-speed USB hosts poll the keyboard and mouse every 1 ms instead of 4.
+- In touch mode the keyboard button under the picture opens the console's
+  own keyboard, with Ctrl, Alt, the F keys and the arrows. For the phone's
+  keyboard, set "Keyboard button" to "phone" in the settings. The touch
+  buttons now show icons instead of words.
+- Faster start. After a restart the firmware makes itself - an update, a
+  setting, a crash - the picture is ready in 3 s and the device answers in
+  about 5, where it was nearly 15: the window for the password-reset button is
+  only open after the reset button or the power (the button cannot be read
+  after a software restart anyway), Ethernet no longer holds up everything
+  else while the link comes up, and the 32 MB memory test at start is off.
+  After a power-on the button window is 4 s instead of 8.
+
+### Fixed
+- H.264 no longer falls back to MJPEG until a restart after the target changes
+  resolution. The encoder needs one unbroken 135 KB block of internal memory
+  at 1080p, and a device that booted at 720p, or had run for a while, often
+  no longer had one. The block is now taken once at boot and reused.
+
 ## [0.69.1] - 2026-10-24
 
 ### Changed

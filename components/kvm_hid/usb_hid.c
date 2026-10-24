@@ -280,7 +280,8 @@ static const uint8_t k_cfg_header[] = {
  * The interval is 4. At high speed - which this device runs at - it is an
  * exponent, 2^(n-1) microframes of 125 us, so the 10 these had was a poll
  * every 64 ms: on average 32 ms added to every key and every pointer move.
- * 4 is 1 ms at high speed and 4 ms at full speed.
+ * 4 is 1 ms at high speed. At full speed it is plain milliseconds, so the full
+ * speed copy is patched to 1 (see build_config_descriptor).
  */
 static const uint8_t k_hid_ifaces[] = {
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(s_kbd_report_desc), 0x81,
@@ -290,6 +291,7 @@ static const uint8_t k_hid_ifaces[] = {
     TUD_HID_DESCRIPTOR(ITF_REL_MOUSE, 6, HID_ITF_PROTOCOL_NONE, sizeof(s_rel_report_desc), 0x83,
                        CFG_TUD_HID_EP_BUFSIZE, 4),
 };
+_Static_assert(sizeof(k_hid_ifaces) == NUM_HID_ITF * TUD_HID_DESC_LEN, "one HID block per interface");
 /*
  * Old BIOS mode: the keyboard alone, with the 8-byte endpoint a boot keyboard
  * has. Some pre-UEFI BIOSes only drive a keyboard that is the whole device, and
@@ -332,8 +334,8 @@ static pad_kind_t s_pad_kind;
  * wTotalLength and bNumInterfaces are then patched to match what was actually
  * emitted.
  */
-static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, pad_mode_t pad, bool with_msc,
-                                      const uint8_t *msc_iface, size_t msc_len)
+static size_t build_config_descriptor(uint8_t *buf, bool full_speed, bool kbd_only, pad_mode_t pad,
+                                      bool with_msc, const uint8_t *msc_iface, size_t msc_len)
 {
     size_t n = 0;
     uint8_t ifaces = 0;
@@ -355,6 +357,12 @@ static size_t build_config_descriptor(uint8_t *buf, bool kbd_only, pad_mode_t pa
         ifaces = 1;
     } else {
         memcpy(buf + n, k_hid_ifaces, sizeof(k_hid_ifaces));
+        if (full_speed) {
+            /* bInterval is the last byte of each block's endpoint descriptor. */
+            for (size_t i = 0; i < NUM_HID_ITF; i++) {
+                buf[n + (i + 1) * TUD_HID_DESC_LEN - 1] = 1;
+            }
+        }
         n += sizeof(k_hid_ifaces);
         ifaces = NUM_HID_ITF;
         if (pad == PAD_ADDED) {
@@ -1670,9 +1678,9 @@ esp_err_t usb_hid_init(void)
     xinput_set_done_cb(xinput_done);
     const bool with_msc = !s_kbd_only && s_pad != PAD_ALONE && kvm_setting_bool("msc_enable");
     s_msc_present = with_msc;
-    build_config_descriptor(s_fs_config_descriptor, s_kbd_only, s_pad, with_msc, k_msc_iface_fs,
+    build_config_descriptor(s_fs_config_descriptor, true, s_kbd_only, s_pad, with_msc, k_msc_iface_fs,
                             sizeof(k_msc_iface_fs));
-    build_config_descriptor(s_hs_config_descriptor, s_kbd_only, s_pad, with_msc, k_msc_iface_hs,
+    build_config_descriptor(s_hs_config_descriptor, false, s_kbd_only, s_pad, with_msc, k_msc_iface_hs,
                             sizeof(k_msc_iface_hs));
     if (s_kbd_only) {
         ESP_LOGI(TAG, "USB functions: old BIOS mode - keyboard only, full speed");

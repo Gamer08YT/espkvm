@@ -225,8 +225,8 @@ tools/test.sh web      # just the console
 
 The P4's hardware JPEG and H.264 encoders compress the picture, and one USB
 port presents a keyboard, two pointers and a disk to the target. At 1080p,
-MJPEG runs at about 20 fps on any board; H.264 at about 27 fps on rev 3.x and
-about 7 on rev 1.x. From moving the mouse to seeing it: about 120 ms. The console is one gzipped file of about 70 KB, with nothing
+MJPEG runs at about 20 fps on any board; H.264 at 25-27 fps on rev 3.x and
+about 7 on rev 1.x. From moving the mouse to seeing it: about 60 ms on rev 3.x. The console is one gzipped file of about 70 KB, with nothing
 fetched from outside.
 
 Video, input, recording, virtual media, reading the screen, security and
