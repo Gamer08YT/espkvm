@@ -2,6 +2,7 @@
  * The frame rate limit on simulated frame times: 60, 59.94, 50 and 30 Hz
  * input with jitter and encoder stalls, an hour each so a slow drift shows.
  * Checks the average rate, frames lost to jitter and bursts after a stall.
+ * Then the encoder's planned rate, which must not follow every wobble.
  */
 #include <stdio.h>
 
@@ -129,6 +130,26 @@ int main(void)
            (double)r.taken / hour, (long long)r.worst_burst);
     CHECK(r.worst_burst <= 31);
     CHECK(r.taken <= 30 * hour + 1);
+
+    /* the plan's share of the source: steady while the rate wanders */
+    {
+        int32_t div = 1;
+        const int32_t made_720p60[] = {53, 59, 52, 58, 57, 60, 51, 59, 53}; /* a Switch at 720p60 */
+        for (unsigned i = 0; i < sizeof made_720p60 / sizeof made_720p60[0]; i++) {
+            div = fps_plan_div(div, 60, made_720p60[i]);
+            CHECK(div == 1);
+        }
+        const int32_t made_1080p50[] = {26, 25, 27, 26, 24, 26}; /* every other frame */
+        for (unsigned i = 0; i < sizeof made_1080p50 / sizeof made_1080p50[0]; i++) {
+            div = fps_plan_div(div, 50, made_1080p50[i]);
+            CHECK(div == 2);
+        }
+        CHECK(fps_plan_div(2, 50, 49) == 1); /* back to every frame */
+        CHECK(fps_plan_div(1, 30, 28) == 1); /* 1080p30, encoder a little short */
+        CHECK(fps_plan_div(1, 60, 28) == 2); /* 1080p60 on rev 3.x */
+        CHECK(fps_plan_div(3, 60, 0) == 3);  /* no measurement: keep */
+        CHECK(fps_plan_div(1, 0, 30) == 1);  /* no source rate: keep */
+    }
 
     if (fails) {
         printf("%d failed\n", fails);

@@ -5,6 +5,21 @@ All notable changes to ESP-KVM are recorded here. The format follows
 semantic versioning while it is pre-1.0 (a new feature bumps the minor, a fix
 bumps the patch).
 
+## [Unreleased]
+
+## [0.71.0] - 2026-10-25
+
+### Added
+- A Nintendo Switch or a Steam Deck in its dock shows as one on the OS
+  button, with its own icon. Both name themselves over HDMI-CEC, while over
+  USB they look much like Linux. The USB fingerprint is still shown under it.
+
+### Fixed
+- On rev 3.x chips H.264 no longer restarts every few seconds with a
+  Switch. The device told the encoder the frame rate it had just reached,
+  and at 720p60 that jumped between 52 and 58. Each new number restarted
+  the encoder with a keyframe, and the picture stuttered. Now it stays at 60.
+
 ## [0.70.0] - 2026-10-24
 
 ### Added

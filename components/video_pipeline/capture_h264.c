@@ -19,6 +19,7 @@
 #include "h264_sps.h"
 #include "capture_priv.h"
 #include "capture.h"
+#include "fps_gate.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -318,7 +319,7 @@ static void encoder_park(void)
  *  60 fps limit on a 30 Hz picture would give each frame half the bits.
  *
  *  On rev 3.x the encoder itself is often the limit - 1080p50 comes out at 25 -
- *  so the rate it actually manages counts too, a frame over it. Older chips
+ *  so the share of the source's frames it keeps up with counts too. Older chips
  *  stay at most 30, as before: the PPA pass holds them far lower, and planning
  *  for that would change how much a frame there may take. */
 static int32_t wanted_fps(void)
@@ -350,7 +351,15 @@ static int32_t wanted_fps(void)
         }
         s_made_prev = made;
     }
-    if (s_made > 0 && s_made < fps) {
+    if (st.input_hz > 0) {
+        /* The capture hands over every frame, every other one and so on, so
+         * the rate it reaches is the source's divided by a whole number. */
+        static int32_t s_div = 1;
+        s_div = fps_plan_div(s_div, (int32_t)st.input_hz, s_made);
+        if ((int32_t)st.input_hz / s_div < fps) {
+            fps = (int32_t)st.input_hz / s_div;
+        }
+    } else if (s_made > 0 && s_made < fps) {
         fps = s_made;
     }
 #else

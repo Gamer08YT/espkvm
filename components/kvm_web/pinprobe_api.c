@@ -180,6 +180,12 @@ static esp_err_t memory_get(httpd_req_t *req)
         cJSON_AddStringToObject(t, "stackIn", ext ? "psram" : "internal");
         cJSON_AddNumberToObject(t, "stack", size[k]);
         cJSON_AddNumberToObject(t, "stackFreeMin", st[k].usStackHighWaterMark);
+#if configGENERATE_RUN_TIME_STATS
+        /* A debug build's CPU time per task, for finding what holds a core. */
+        cJSON_AddNumberToObject(t, "runUs", (double)st[k].ulRunTimeCounter);
+        const BaseType_t core = xTaskGetCoreID(st[k].xHandle); /* pinned to, -1 if not */
+        cJSON_AddNumberToObject(t, "core", core == tskNO_AFFINITY ? -1 : (int)core);
+#endif
         cJSON_AddItemToArray(tasks, t);
     }
     cJSON_AddNumberToObject(root, "internalStacks", internal_stacks);
