@@ -7,6 +7,30 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-10-25
+
+### Added
+- Device profiles. A profile keeps its own pointer, gamepad and video settings
+  for one target, and the device picks it by itself from what HDMI-CEC or USB
+  says about that target. A Steam Deck can get the relative pointer and a
+  Switch the gamepad, with no switching by hand. When a profile changes the
+  gamepad or the EDID, the device restarts once to apply it. Presets for a
+  Steam Deck, a Switch, a Mi TV Stick and an Android TV box on USB make one in
+  a click, and the OS button makes one for the target attached now. Default
+  is the settings as before, and nothing changes until you make a profile.
+  Profiles go into the settings file too. API: `/api/v1/profiles`.
+
+### Changed
+- The OS button shows up for a source known only over HDMI-CEC, like a TV
+  stick with no USB to the device, under the name it gives. A Mi TV Stick
+  shows as Android.
+
+### Fixed
+- Swap one source for another on the same HDMI input, and the device kept
+  the old one's CEC name: a Switch plugged in where a TV stick was still
+  showed as the stick. A source that announces itself is now asked again who
+  it is.
+
 ## [0.71.0] - 2026-10-25
 
 ### Added

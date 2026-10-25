@@ -4,6 +4,8 @@ idf_component_register(
         "kvm_thermal.c"
         "kvm_settings.c"
         "kvm_settings_table.c"
+        "kvm_profiles.c"
+        "profile_match.c"
         "pin_conflict.c"
     INCLUDE_DIRS "include"
     REQUIRES

@@ -19,6 +19,8 @@ esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *mess
 /** Recording, screenshots, and the files they leave on the card. See record_api.c. */
 const httpd_uri_t *record_api_routes(size_t *count);
 const httpd_uri_t *cec_api_routes(size_t *count);
+/** Device profiles. See profiles_api.c. */
+const httpd_uri_t *profiles_api_routes(size_t *count);
 /** The target's serial console: the /serial WebSocket and its REST. See serial_api.c. */
 const httpd_uri_t *serial_api_routes(size_t *count);
 /**

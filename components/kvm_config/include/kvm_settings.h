@@ -35,6 +35,7 @@ enum {
     KVM_SF_PIN = 1u << 2,    /**< an INT that is a GPIO number: the console renders it
                                  as a pin picker (free GPIOs + "None"), and it feeds the
                                  pin map. -1 means unassigned. */
+    KVM_SF_PROFILE = 1u << 3, /**< a device profile may hold its own value (kvm_profiles.h) */
 };
 
 typedef struct {
@@ -82,11 +83,14 @@ esp_err_t kvm_settings_init(void);
 const kvm_setting_t *kvm_settings_table(size_t *out_count);
 const kvm_setting_t *kvm_setting_find(const char *key);
 
+/* Reads give the value in effect: the active profile's own one when it has it,
+ * else the stored (Default) one. */
 int32_t kvm_setting_int(const char *key);
 bool kvm_setting_bool(const char *key);
 /** @return the stored string, never NULL; valid until the next set on that key. */
 const char *kvm_setting_str(const char *key);
 
+/* A KVM_SF_PROFILE key is written to the active profile unless that is Default. */
 esp_err_t kvm_setting_set_int(const char *key, int32_t value);
 esp_err_t kvm_setting_set_str(const char *key, const char *value);
 
@@ -99,7 +103,8 @@ esp_err_t kvm_setting_set_str(const char *key, const char *value);
  */
 void kvm_install_id(char out[KVM_INSTALL_ID_LEN + 1]);
 
-/** Restore every setting to its declared default and erase the NVS namespace. */
+/** Restore every setting to its declared default and erase the NVS namespace,
+ *  the profiles with it. */
 esp_err_t kvm_settings_reset(void);
 
 esp_err_t kvm_settings_subscribe(kvm_settings_cb_t cb, void *user);
@@ -107,6 +112,8 @@ esp_err_t kvm_settings_subscribe(kvm_settings_cb_t cb, void *user);
 /** malloc'd JSON; caller frees. Schema is static, values reflect current state. */
 char *kvm_settings_schema_json(void);
 char *kvm_settings_values_json(void);
+/** The values Default holds, under whatever profile is active. */
+char *kvm_settings_default_values_json(void);
 
 /**
  * Apply a flat JSON object of key/value pairs. All-or-nothing: the request is

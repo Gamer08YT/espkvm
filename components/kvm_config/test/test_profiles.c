@@ -1,0 +1,367 @@
+/*
+ * SPDX-FileCopyrightText: 2026 ESP-KVM contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Device profiles over the real settings store and table, on a fake NVS.
+ * Each boot() is a forked child, so a restart starts from what is stored.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "cJSON.h"
+#include "kvm_profiles.h"
+#include "kvm_settings.h"
+#include "nvs.h"
+
+static int failures;
+
+#define CHECK(cond)                                                 \
+    do {                                                            \
+        if (!(cond)) {                                              \
+            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+            failures++;                                             \
+        }                                                           \
+    } while (0)
+
+/* What the real build gets from kvm_caps.c and kvm_board. */
+const char *kvm_cap_key(kvm_cap_t cap)
+{
+    (void)cap;
+    return "cap";
+}
+
+const char *kvm_board_reserved_by(int gpio)
+{
+    (void)gpio;
+    return NULL;
+}
+
+static int s_notified;
+static char s_last_key[32];
+
+static void on_change(const char *key, void *user)
+{
+    (void)user;
+    s_notified++;
+    strncpy(s_last_key, key, sizeof(s_last_key) - 1);
+}
+
+static void boot(void)
+{
+    CHECK(kvm_settings_init() == ESP_OK);
+    CHECK(kvm_settings_subscribe(on_change, NULL) == ESP_OK);
+    s_notified = 0;
+}
+
+static int run(void (*phase)(void))
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0) {
+        boot();
+        phase();
+        fflush(stdout);
+        _exit(failures ? 1 : 0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : 1;
+}
+
+static int stored_i32(const char *ns, const char *key, int32_t *out)
+{
+    nvs_handle_t h;
+    if (nvs_open(ns, NVS_READONLY, &h) != ESP_OK) {
+        return -1;
+    }
+    esp_err_t e = nvs_get_i32(h, key, out);
+    nvs_close(h);
+    return e == ESP_OK ? 0 : -1;
+}
+
+static cJSON *profiles(void)
+{
+    char *s = kvm_profiles_json();
+    cJSON *o = cJSON_Parse(s);
+    free(s);
+    return o;
+}
+
+static uint8_t create(const char *body, bool *reboot)
+{
+    uint8_t id = 0;
+    char err[96];
+    esp_err_t e = kvm_profiles_create(body, &id, reboot, err, sizeof(err));
+    if (e != ESP_OK) {
+        printf("create %s: %s\n", body, err);
+    }
+    CHECK(e == ESP_OK);
+    return id;
+}
+
+/* No profile made: settings live where they always did, nothing new in NVS. */
+static void fresh(void)
+{
+    CHECK(kvm_setting_int("mouse_mode") == 0);
+    CHECK(kvm_setting_set_int("mouse_mode", 1) == ESP_OK);
+    int32_t v = -1;
+    CHECK(stored_i32("kvm", "mouse_mode", &v) == 0 && v == 1);
+    CHECK(fake_nvs_keys("kvm_prof") == -1);
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+
+    cJSON *p = profiles();
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(p, "profiles")) == 1);
+    /* Every preset names values the table takes. */
+    const cJSON *pre;
+    cJSON_ArrayForEach(pre, cJSON_GetObjectItem(p, "presets"))
+    {
+        CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(pre, "set")) > 0);
+    }
+    cJSON_Delete(p);
+}
+
+static void deck(void)
+{
+    bool reboot = true;
+    uint8_t id = create("{\"from\":\"steamdeck\"}", &reboot);
+    CHECK(id == 1);
+    CHECK(!reboot);
+    CHECK(kvm_profiles_active() == 1 && kvm_profiles_manual());
+    CHECK(kvm_setting_int("target_os") == 3);
+    CHECK(s_notified == 1 && strcmp(s_last_key, "target_os") == 0);
+
+    /* A profile key goes to the profile, anything else to Default. */
+    CHECK(kvm_setting_set_int("mouse_sens", 250) == ESP_OK);
+    int32_t v;
+    CHECK(stored_i32("kvm", "mouse_sens", &v) == -1);
+    CHECK(kvm_setting_set_int("jiggle_s", 30) == ESP_OK);
+    CHECK(stored_i32("kvm", "jiggle_s", &v) == 0 && v == 30);
+    /* The same value as in effect makes no value of the profile's own. */
+    CHECK(kvm_setting_set_int("scroll_inv", 0) == ESP_OK);
+
+    cJSON *p = profiles();
+    const cJSON *set = cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(p, "profiles"), 1), "set");
+    CHECK(cJSON_GetObjectItem(set, "mouse_sens") != NULL);
+    CHECK(cJSON_GetObjectItem(set, "mouse_mode")->valueint == 1);
+    CHECK(cJSON_GetObjectItem(set, "scroll_inv") == NULL);
+    cJSON_Delete(p);
+}
+
+/* After a restart the active profile is in effect before anyone reads. */
+static void deck_again(void)
+{
+    CHECK(kvm_profiles_active() == 1);
+    CHECK(kvm_setting_int("target_os") == 3);
+    CHECK(kvm_setting_int("mouse_sens") == 250);
+    CHECK(kvm_setting_int("jiggle_s") == 30);
+
+    bool reboot = false;
+    uint8_t id = create("{\"from\":\"switch\",\"name\":\"Switch\"}", &reboot);
+    CHECK(id == 2);
+    CHECK(reboot); /* usb_pad moved */
+    CHECK(kvm_setting_int("usb_pad") == 2);
+    /* Values the Switch profile does not hold come from Default. */
+    CHECK(kvm_setting_int("target_os") == 0);
+    CHECK(kvm_setting_int("mouse_mode") == 1);
+}
+
+static void delete_and_select(void)
+{
+    bool reboot;
+    CHECK(kvm_profiles_delete(KVM_PROFILE_DEFAULT, &reboot) == ESP_ERR_NOT_ALLOWED);
+    CHECK(kvm_profiles_delete(2, &reboot) == ESP_OK);
+    CHECK(reboot);
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_setting_int("usb_pad") == 0);
+    CHECK(kvm_profiles_delete(2, &reboot) == ESP_ERR_NOT_FOUND);
+
+    CHECK(kvm_profiles_select(1, true, &reboot) == ESP_OK);
+    char err[96];
+    CHECK(kvm_profiles_update("{\"id\":1,\"unset\":[\"target_os\"],\"set\":{\"ptr_engage\":\"hover\"}}",
+                              &reboot, err, sizeof(err)) == ESP_OK);
+    CHECK(kvm_setting_int("target_os") == 0);
+    CHECK(kvm_setting_int("ptr_engage") == 1);
+
+    /* Refused whole: one bad value leaves the profile as it was. */
+    CHECK(kvm_profiles_update("{\"id\":1,\"set\":{\"ptr_engage\":0,\"jiggle_s\":5}}", &reboot, err,
+                              sizeof(err)) == ESP_ERR_INVALID_ARG);
+    CHECK(kvm_setting_int("ptr_engage") == 1);
+    CHECK(kvm_profiles_update("{\"id\":1,\"set\":{\"mouse_mode\":\"sideways\"}}", &reboot, err,
+                              sizeof(err)) == ESP_ERR_INVALID_ARG);
+    CHECK(kvm_profiles_update("{\"id\":0,\"name\":\"x\"}", &reboot, err, sizeof(err)) ==
+          ESP_ERR_NOT_ALLOWED);
+
+    /* Default's own value is under the profile, not lost. */
+    CHECK(kvm_profiles_select(KVM_PROFILE_DEFAULT, true, &reboot) == ESP_OK);
+    CHECK(kvm_setting_int("mouse_sens") != 250);
+    CHECK(kvm_setting_int("ptr_engage") == 0);
+}
+
+static void pick(void)
+{
+    bool reboot;
+    uint8_t tv = create("{\"from\":\"androidtv\",\"select\":false}", &reboot);
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"STEAM DECK", "", "linux"}) == 1);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"", "e0319e", ""}) == 1);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"", "", "linux"}) == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"", "", "android"}) == tv);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"SHIELD", "", "android"}) == tv);
+    /* A stick seen over CEC only, and a Xiaomi that is not one. */
+    uint8_t stick = create("{\"from\":\"mitvstick\",\"select\":false}", &reboot);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"Mi TV Stick", "00ec0a", ""}) == stick);
+    CHECK(kvm_profiles_pick(&(kvm_prof_seen_t){"Mi Soundbar", "00ec0a", ""}) == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_profiles_delete(stick, &reboot) == ESP_OK);
+
+    /* "current" from Default is empty; from a profile, a copy of its values. */
+    CHECK(create("{\"name\":\"blank\",\"select\":false}", &reboot) != 0);
+    CHECK(kvm_profiles_select(1, true, &reboot) == ESP_OK);
+    uint8_t copy = create("{\"name\":\"copy\"}", &reboot);
+    CHECK(kvm_profiles_active() == copy);
+    CHECK(kvm_setting_int("mouse_sens") == 250);
+
+    /* Default as it is under a profile: what an export writes. */
+    char *def = kvm_settings_default_values_json();
+    cJSON *dv = cJSON_Parse(def);
+    free(def);
+    CHECK(cJSON_GetObjectItem(dv, "mouse_sens")->valueint != 250);
+    cJSON_Delete(dv);
+
+    /* An import gives a new profile its values in one go. */
+    uint8_t imp = create("{\"name\":\"imp\",\"from\":\"empty\",\"select\":false,"
+                         "\"set\":{\"mouse_mode\":\"relative\",\"usb_pad\":3}}",
+                         &reboot);
+    cJSON *p = profiles();
+    const cJSON *it;
+    int found = 0;
+    cJSON_ArrayForEach(it, cJSON_GetObjectItem(p, "profiles"))
+    {
+        if (cJSON_GetObjectItem(it, "id")->valueint == imp) {
+            const cJSON *set = cJSON_GetObjectItem(it, "set");
+            found = cJSON_GetObjectItem(set, "mouse_mode")->valueint == 1 &&
+                    cJSON_GetObjectItem(set, "usb_pad")->valueint == 3;
+        }
+    }
+    CHECK(found);
+    cJSON_Delete(p);
+    CHECK(kvm_profiles_delete(imp, &reboot) == ESP_OK);
+}
+
+/* The device picks for itself, once per device, and a choice by hand holds. */
+static void auto_pick(void)
+{
+    const kvm_prof_seen_t deck = {"Steam Deck", "e0319e", "linux"};
+    const char *deck_fp = "Steam Deck|e0319e|linux";
+    CHECK(kvm_profiles_manual());
+    kvm_profiles_note_seen(&deck, deck_fp);
+    CHECK(kvm_profiles_device_settled(&deck, deck_fp));
+    CHECK(kvm_profiles_active() == 1 && !kvm_profiles_manual());
+    CHECK(!kvm_profiles_device_settled(&deck, deck_fp));
+
+    bool reboot;
+    CHECK(kvm_profiles_select(3, true, &reboot) == ESP_OK); /* "blank" */
+    CHECK(!kvm_profiles_device_settled(&deck, deck_fp));
+    CHECK(kvm_profiles_active() == 3);
+
+    const kvm_prof_seen_t tv = {"", "", "android"};
+    kvm_profiles_note_seen(&tv, "||android");
+    CHECK(kvm_profiles_device_settled(&tv, "||android"));
+    CHECK(kvm_profiles_active() == 2); /* tv was made second, in pick() */
+
+    cJSON *p = profiles();
+    CHECK(strcmp(cJSON_GetObjectItem(cJSON_GetObjectItem(p, "seen"), "usbOs")->valuestring, "android") == 0);
+    cJSON_Delete(p);
+
+    /* The same device after a restart: a profile made for it since is picked,
+       a choice by hand is not undone. */
+    const kvm_prof_seen_t stick = {"Mi TV Stick", "00ec0a", ""};
+    const char *stick_fp = "Mi TV Stick|00ec0a|";
+    kvm_profiles_note_seen(&stick, stick_fp);
+    CHECK(kvm_profiles_device_settled(&stick, stick_fp));
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    uint8_t sid = 0;
+    CHECK(kvm_profiles_create("{\"from\":\"mitvstick\",\"select\":false}", &sid, &reboot, NULL, 0) == ESP_OK);
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_profiles_device_settled(&stick, stick_fp));
+    CHECK(kvm_profiles_active() == sid && !kvm_profiles_manual());
+    CHECK(!kvm_profiles_device_settled(&stick, stick_fp));
+    CHECK(kvm_profiles_select(KVM_PROFILE_DEFAULT, true, &reboot) == ESP_OK);
+    CHECK(!kvm_profiles_device_settled(&stick, stick_fp));
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_profiles_delete(sid, &reboot) == ESP_OK);
+    CHECK(kvm_profiles_select(2, false, &reboot) == ESP_OK); /* as reset() expects */
+
+    CHECK(kvm_profiles_restart_allowed());
+    CHECK(kvm_profiles_restart_allowed());
+    CHECK(!kvm_profiles_restart_allowed());
+    kvm_profiles_uptime_ok();
+    CHECK(kvm_profiles_restart_allowed());
+
+    /* Restarts for a Switch, then the stick put in its place: a person
+       swapping sources, so the count starts again. The same Switch with
+       another USB guess (what its own gamepad mode does) is not. */
+    kvm_profiles_uptime_ok();
+    const kvm_prof_seen_t sw = {"NintendoSwitch", "0009bf", "android"};
+    kvm_profiles_note_seen(&sw, "NintendoSwitch|0009bf|android");
+    (void)kvm_profiles_device_settled(&sw, "NintendoSwitch|0009bf|android");
+    CHECK(kvm_profiles_restart_allowed());
+    CHECK(kvm_profiles_restart_allowed());
+    CHECK(!kvm_profiles_restart_allowed());
+    const kvm_prof_seen_t sw2 = {"NintendoSwitch", "0009bf", "linux"};
+    kvm_profiles_note_seen(&sw2, "NintendoSwitch|0009bf|linux");
+    (void)kvm_profiles_device_settled(&sw2, "NintendoSwitch|0009bf|linux");
+    CHECK(!kvm_profiles_restart_allowed());
+    const kvm_prof_seen_t none = {"", "", "linux"};
+    kvm_profiles_note_seen(&none, "||linux");
+    (void)kvm_profiles_device_settled(&none, "||linux");
+    CHECK(!kvm_profiles_restart_allowed());
+    const kvm_prof_seen_t st = {"Mi TV Stick", "00ec0a", ""};
+    kvm_profiles_note_seen(&st, "Mi TV Stick|00ec0a|");
+    (void)kvm_profiles_device_settled(&st, "Mi TV Stick|00ec0a|");
+    CHECK(kvm_profiles_restart_allowed());
+    kvm_profiles_uptime_ok();
+    bool rb;
+    CHECK(kvm_profiles_select(2, false, &rb) == ESP_OK); /* as reset() expects */
+}
+
+static void reset(void)
+{
+    CHECK(kvm_profiles_active() != KVM_PROFILE_DEFAULT);
+    CHECK(kvm_settings_reset() == ESP_OK);
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    CHECK(fake_nvs_keys("kvm_prof") <= 0);
+    CHECK(kvm_setting_int("mouse_mode") == 0);
+    cJSON *p = profiles();
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(p, "profiles")) == 1);
+    cJSON_Delete(p);
+}
+
+static void after_reset(void)
+{
+    CHECK(kvm_profiles_active() == KVM_PROFILE_DEFAULT);
+    CHECK(kvm_setting_int("mouse_sens") != 250);
+}
+
+int main(void)
+{
+    fake_nvs_clear();
+    int bad = 0;
+    bad += run(fresh);
+    bad += run(deck);
+    bad += run(deck_again);
+    bad += run(delete_and_select);
+    bad += run(pick);
+    bad += run(auto_pick);
+    bad += run(reset);
+    bad += run(after_reset);
+    if (bad) {
+        printf("profiles: %d phase(s) failed\n", bad);
+        return 1;
+    }
+    printf("profiles: all passed\n");
+    return 0;
+}

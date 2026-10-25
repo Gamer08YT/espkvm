@@ -34,6 +34,7 @@
 | Noticing a screen that is one flat colour | works; a stop screen or a blanked output has no characters, but it is one colour and it stays |
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
+| Device profiles: pointer, gamepad and video settings for each target | new. Picked by the device from what HDMI-CEC or USB says about the target, or by hand. Presets for a Steam Deck, a Switch, a Mi TV Stick and an Android TV box on USB. [More](#device-profiles) |
 | Wake-on-LAN | works |
 | A gamepad for a console (Switch, original Xbox, Steam Deck, Windows) | works on a Switch (Settings &rarr; Input &rarr; Gamepad &rarr; switch_alone); the wired Xbox 360 pad for Windows and a Steam Deck is not tried on hardware yet. The original Xbox pad (`xbox`) comes from [ZacharyLeahan's fork](https://github.com/ZacharyLeahan/espkvm), where it was tried on a real Xbox; the console's controller port needs an adapter to a USB socket. The console gets a gamepad panel or an overlay over the picture, and a controller on your own computer works through it ([clip](https://www.youtube.com/watch?v=UCSkzGHSKWI)) |
 | HDMI-CEC: see the source, send it remote keys, standby and wake | works on boards with a TC358743 capture chip; the device acts as a TV. Only media boxes, consoles, a Raspberry Pi and the like speak CEC - an ordinary PC does not. Tried with a Steam Deck in its dock: name, remote keys in the Steam menus and standby work, wake does not ([clip](https://www.youtube.com/watch?v=hXiaOugYkVM)) |
@@ -195,6 +196,32 @@ Linux, Task Manager on Windows - and whether the Meta key is labelled Win, Cmd o
 Super. A `Target OS` setting overrides it when the guess is wrong, or when the
 target never showed enough to tell. If it reads your machine wrong, send that
 trace and a later build can learn it.
+
+## Device profiles
+
+A Steam Deck works best with a relative pointer, and a Switch wants the
+gamepad on its own. A profile keeps such settings for one target, and the
+device switches to it when that target is attached.
+
+Default is the settings as they always were. A profile holds only the values
+it changes, so a change in Default reaches every profile that does not change
+that value. A profile can hold the pointer settings, the gamepad, the target
+OS, the keyboard layout, the codec, quality, frame rate, EDID and a few console
+options. Network, passwords, VPN, recording and pins are the same for all.
+
+The Settings page edits the active profile, named at the top. "New" starts one
+from a preset, a copy of the active profile, or nothing. The OS button makes a
+profile for the target attached now.
+
+A rule picks the profile: the start of the target's CEC name, its CEC vendor
+id, or the OS guessed from USB. CEC wins over USB, because a Switch and a Steam
+Deck look like Linux over USB. The device chooses a few seconds after a new
+target settles, with no console open. A profile picked by hand stays until
+another target is attached. The gamepad and the EDID are read at start-up, so
+when a profile changes one of them the device restarts once to apply it.
+
+Without a profile of your own nothing changes, and an older firmware still
+finds Default where it was.
 
 ## Every feature is optional
 

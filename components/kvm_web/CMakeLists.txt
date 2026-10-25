@@ -8,6 +8,7 @@ idf_component_register(
         "record_api.c"
         "totp.c"
         "cec_api.c"
+        "profiles_api.c"
         "serial_api.c"
         "netlog_api.c"
         "audio_api.c"

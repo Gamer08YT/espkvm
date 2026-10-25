@@ -47,6 +47,7 @@
 #include "kvm_settings.h"
 #include "kvm_notify.h"
 #include "kvm_cec.h"
+#include "profile_auto.h"
 #include "kvm_sched.h"
 #include "runbook.h"
 #include "usb_hid.h"
@@ -800,6 +801,8 @@ void app_main(void)
     capture_start();
     /* HDMI-CEC waits on its own task for the bridge capture brings up. */
     kvm_cec_init();
+    /* Device profiles chosen by the attached device: needs CEC and USB up. */
+    profile_auto_start();
 
     report_pending_capabilities();
     kvm_caps_log();

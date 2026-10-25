@@ -200,6 +200,16 @@ static void handle(const kvm_bridge_cec_frame_t *f)
     }
     switch (op) {
     case OP_REPORT_PHYS_ADDR:
+        /* Broadcast unasked, this is a device that has just taken the
+           address: maybe another one than before (a Switch where a TV stick
+           was), so what we knew about the address is dropped and asked again.
+           Our own Give Physical Address gets the same broadcast back. */
+        if (d && from != s_own && to == BROADCAST && now_ms() - s_asked_ms[from] > 5000) {
+            d->name[0] = '\0';
+            d->vendor = 0xffffffff;
+            d->version = -1;
+            s_ask |= (uint16_t)(1u << from);
+        }
         if (d && n >= 3) {
             d->phys_addr = (uint16_t)(arg[0] << 8 | arg[1]);
             d->type = (int8_t)arg[2];

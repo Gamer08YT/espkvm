@@ -109,18 +109,21 @@ static const kvm_setting_t s_settings[] = {
                 "unusable over plain HTTP until TLS is in place.",
         .min = 0, .max = ENUM_MAX(s_codec_choices), .def = 0, .choices = s_codec_choices,
         .requires_cap = KVM_CAP_H264,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "jpg_quality", .section = "video", .group = "Picture", .type = KVM_VT_INT,
         .title = "JPEG quality",
         .help = "Higher is sharper and larger. Only affects the MJPEG codec.",
         .min = 1, .max = 100, .def = CONFIG_KVM_JPEG_QUALITY, .requires_cap = KVM_CAP_MJPEG,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "h264_kbps", .section = "video", .group = "Picture", .type = KVM_VT_INT,
         .title = "H.264 bitrate (kbit/s)",
         .help = "Target bitrate for the hardware encoder.",
         .min = 500, .max = 20000, .def = 4000, .requires_cap = KVM_CAP_H264,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "webrtc_enable", .section = "video", .group = "Picture", .type = KVM_VT_BOOL,
@@ -137,6 +140,7 @@ static const kvm_setting_t s_settings[] = {
         .help = "Upper bound on encoded frames per second. Lower it to save bandwidth "
                 "on a slow link.",
         .min = 1, .max = 60, .def = 60, .requires_cap = KVM_CAP_VIDEO,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "vid_adapt", .section = "video", .group = "Picture", .type = KVM_VT_BOOL,
@@ -279,7 +283,7 @@ static const kvm_setting_t s_settings[] = {
                 "\"full\". Text modes stay on offer either way, so a BIOS still comes "
                 "through as text.",
         .min = 0, .max = ENUM_MAX(s_edid_choices), .def = 5, .choices = s_edid_choices,
-        .requires_cap = KVM_CAP_EDID, .flags = KVM_SF_REBOOT,
+        .requires_cap = KVM_CAP_EDID, .flags = KVM_SF_REBOOT | KVM_SF_PROFILE,
     },
     {
         .key = "scr_watch", .section = "video", .type = KVM_VT_BOOL,
@@ -311,6 +315,7 @@ static const kvm_setting_t s_settings[] = {
                 "trusts the guess made from how the target enumerates USB, shown next "
                 "to the USB status; set it by hand if that guess is wrong or unknown.",
         .min = 0, .max = ENUM_MAX(s_targetos_choices), .def = 0, .choices = s_targetos_choices, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "mouse_mode", .section = "input", .group = "Pointer", .type = KVM_VT_ENUM,
@@ -322,6 +327,7 @@ static const kvm_setting_t s_settings[] = {
                 "relative mode the console hides your own cursor while in "
                 "control, so the target's is the only one; Esc gives it back.",
         .min = 0, .max = ENUM_MAX(s_mouse_choices), .def = 0, .choices = s_mouse_choices, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ptr_engage", .section = "input", .group = "Pointer", .type = KVM_VT_ENUM,
@@ -332,6 +338,7 @@ static const kvm_setting_t s_settings[] = {
                 "the video, the way a remote desktop behaves. Keyboard input always "
                 "requires a click first.",
         .min = 0, .max = ENUM_MAX(s_engage_choices), .def = 0, .choices = s_engage_choices, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     /* A target with several screens: an absolute pointer addresses the whole
        desktop, not the one screen captured. Read by the console only. */
@@ -344,30 +351,35 @@ static const kvm_setting_t s_settings[] = {
                 "screen sits in it, in the target's pixels - for two 1920x1080 screens side "
                 "by side with this one on the right: 3840, 1080, 1920, 0. 0 here turns it off.",
         .min = 0, .max = 32767, .def = 0, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ptr_desk_h", .section = "input", .group = "Several screens", .type = KVM_VT_INT,
         .title = "Whole desktop height (px)",
         .help = "The height of the whole desktop. 0 means the same as this screen.",
         .min = 0, .max = 32767, .def = 0, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ptr_scr_x", .section = "input", .group = "Several screens", .type = KVM_VT_INT,
         .title = "This screen's left edge (px)",
         .help = "Where this screen starts, from the left of the whole desktop.",
         .min = 0, .max = 32767, .def = 0, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ptr_scr_y", .section = "input", .group = "Several screens", .type = KVM_VT_INT,
         .title = "This screen's top edge (px)",
         .help = "Where this screen starts, from the top of the whole desktop.",
         .min = 0, .max = 32767, .def = 0, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "mouse_sens", .section = "input", .group = "Pointer", .type = KVM_VT_INT,
         .title = "Relative sensitivity (%)",
         .help = "Scales pointer movement in relative mode only.",
         .min = 10, .max = 400, .def = 100, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "jiggle_s", .section = "input", .group = "Pointer", .type = KVM_VT_INT,
@@ -386,7 +398,7 @@ static const kvm_setting_t s_settings[] = {
                 "plain keyboard at USB 1.1 speed, the way a real keyboard looks. The mouse, "
                 "media keys and virtual media are off while this is on. Takes effect after "
                 "a restart.",
-        .def = 0, .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
+        .def = 0, .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT | KVM_SF_PROFILE,
     },
     {
         .key = "usb_pad", .section = "input", .group = "Target", .type = KVM_VT_ENUM,
@@ -401,12 +413,13 @@ static const kvm_setting_t s_settings[] = {
                 "looks - Windows needs that for the Xbox pad, and a console may ignore a pad "
                 "with company. Takes effect after a restart.",
         .min = 0, .max = ENUM_MAX(s_pad_choices), .def = 0, .choices = s_pad_choices,
-        .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
+        .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT | KVM_SF_PROFILE,
     },
     {
         .key = "scroll_inv", .section = "input", .group = "Pointer", .type = KVM_VT_BOOL,
         .title = "Invert scroll wheel",
         .def = 0, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "kbd_layout", .section = "input", .group = "Keyboard", .type = KVM_VT_ENUM,
@@ -414,6 +427,7 @@ static const kvm_setting_t s_settings[] = {
         .help = "Used when pasting text, so the characters sent match what the target "
                 "actually types. A KVM sends key positions, not characters.",
         .min = 0, .max = ENUM_MAX(s_layout_choices), .def = 0, .choices = s_layout_choices, .requires_cap = KVM_CAP_HID,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "type_delay", .section = "input", .group = "Keyboard", .type = KVM_VT_INT,
@@ -1268,6 +1282,7 @@ static const kvm_setting_t s_settings[] = {
                 "at the top, or a tap of the right Ctrl key on its own, and go again a few "
                 "seconds after you leave them.",
         .def = 1, .requires_cap = -1,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ui_touch_kbd", .section = "ui", .group = "Touch controls", .type = KVM_VT_ENUM,
@@ -1278,6 +1293,7 @@ static const kvm_setting_t s_settings[] = {
                 "keyboard, for typing text with its layouts and suggestions.",
         .min = 0, .max = ENUM_MAX(s_touch_kbd_choices), .def = 0, .choices = s_touch_kbd_choices,
         .requires_cap = -1,
+        .flags = KVM_SF_PROFILE,
     },
     {
         .key = "ui_hidden", .section = "ui", .group = "Buttons", .type = KVM_VT_STR,
@@ -1287,6 +1303,7 @@ static const kvm_setting_t s_settings[] = {
                 "settings have it. Stored as the ids of the hidden controls; the console "
                 "keeps the list of what can be hidden.",
         .def_str = "", .max_len = 255, .requires_cap = -1,
+        .flags = KVM_SF_PROFILE,
     },
     /* Vibration on a phone. Read by the console only; the device keeps the
        values so every phone that signs in gets the same feel. */

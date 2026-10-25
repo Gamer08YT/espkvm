@@ -958,9 +958,9 @@ esp_err_t capture_reconnect_source(void)
  * mode-change line is wired (CONFIG_KVM_BRIDGE_INT_GPIO - the M5Stack add-on's
  * INTIO on G38), its pulse wakes the poll at once instead.
  */
+#if CONFIG_KVM_BRIDGE_INT_GPIO >= 0
 static TaskHandle_t s_monitor_task;
 
-#if CONFIG_KVM_BRIDGE_INT_GPIO >= 0
 static void IRAM_ATTR bridge_int_isr(void *arg)
 {
     (void)arg;

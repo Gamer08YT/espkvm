@@ -72,6 +72,7 @@
 #include "kvm_display.h"
 #include "kvm_log.h"
 #include "kvm_settings.h"
+#include "kvm_profiles.h"
 #include "kvm_record.h"
 #include "web_priv.h"
 #include "kvm_storage.h"
@@ -548,7 +549,12 @@ static esp_err_t api_settings_get(httpd_req_t *req)
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
     }
-    return send_json_owned(req, kvm_settings_values_json());
+    /* ?profile=default: Default's own values under a device profile (an export). */
+    char q[32], prof[16];
+    const bool def = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+                     httpd_query_key_value(q, "profile", prof, sizeof(prof)) == ESP_OK &&
+                     strcmp(prof, "default") == 0;
+    return send_json_owned(req, def ? kvm_settings_default_values_json() : kvm_settings_values_json());
 }
 
 static esp_err_t api_settings_put(httpd_req_t *req)
@@ -643,7 +649,8 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
         snprintf(age, sizeof(age), "%u", (unsigned)st.frame_age_ms);
     }
 
-    char body[1460];
+    /* Worst case with every string field full is about 1450. */
+    char body[1600];
     int n = snprintf(body, sizeof(body),
                      "{\"knowsDdc5v\":%s,\"signal\":%s,\"width\":%u,\"height\":%u,\"interlaced\":%s,"
                      "\"inputHz\":%u,\"tooFast\":%s,\"audioHz\":%u,"
@@ -670,7 +677,10 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      "\"event\":%s,\"dashcam\":%s,\"dashcamNoMemory\":%s,\"prerollSeconds\":%u,"
                      "\"timelapse\":%u,\"clipSecondsLeft\":%u,\"clipsConverting\":%u,"
                      "\"lastClip\":\"%s\"},"
-                     "\"screenshotBlocked\":%s%s%s}",
+                     "\"screenshotBlocked\":%s%s%s,"
+                     /* The device may switch profiles by itself: the console
+                        reloads the settings when this moves. */
+                     "\"profile\":%u}",
                      capture_source_power_known() ? "true" : "false",
                      st.signal ? "true" : "false", (unsigned)st.hres, (unsigned)st.vres,
                      st.interlaced ? "true" : "false", (unsigned)st.input_hz,
@@ -695,7 +705,8 @@ static esp_err_t api_video_status_get(httpd_req_t *req)
                      (unsigned)rec.preroll_seconds,
                      (unsigned)rec.timelapse_every, (unsigned)rec.clip_seconds_left,
                      (unsigned)rec.clips_converting, rec.last_clip, shot_blocked ? "\"" : "",
-                     shot_blocked ? shot_blocked : "null", shot_blocked ? "\"" : "");
+                     shot_blocked ? shot_blocked : "null", shot_blocked ? "\"" : "",
+                     (unsigned)kvm_profiles_active());
     if (n <= 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, "500 Internal Server Error", "status too long");
     }
@@ -4873,15 +4884,15 @@ httpd_handle_t http_server_start(void)
      * and input die with a 404 on wss while every REST route still answers, which
      * looks like anything but a table that is one entry too small.
      *
-     * The count, as of writing: 49 in api_uris, 9 from record_api_routes(), 5 from
-     * cec_api_routes(), 8 from kvm_auth_register(), and 12 standalone (the console
-     * files, /cert.pem, /stream, /video, /ws) = 83. Adding the log endpoint once took it from 44 to 45 and
-     * cost the keyboard; the recorder's routes took it past 64.
+     * The count on 2026-10-25 is about 104 (count the `{.uri = ` rows across this
+     * component); the profiles' five took it there. Adding the log endpoint once
+     * took it from 44 to 45 and cost the keyboard; the recorder's routes took it
+     * past 64.
      *
      * The check below now logs a failed registration rather than swallowing it, so
      * the next person gets a line instead of a mystery - but keep headroom anyway.
      */
-    cfg.max_uri_handlers = 112;
+    cfg.max_uri_handlers = 128;
 
     if (kvm_auth_init() != ESP_OK) {
         /* Without a working password store the only safe answer is not to
@@ -5086,6 +5097,11 @@ httpd_handle_t http_server_start(void)
     const httpd_uri_t *cec_uris = cec_api_routes(&n_cec);
     for (size_t i = 0; i < n_cec; i++) {
         register_route(h, &cec_uris[i]);
+    }
+    size_t n_prof = 0;
+    const httpd_uri_t *prof_uris = profiles_api_routes(&n_prof);
+    for (size_t i = 0; i < n_prof; i++) {
+        register_route(h, &prof_uris[i]);
     }
     size_t n_fetch = 0;
     const httpd_uri_t *fetch_uris = url_fetch_routes(&n_fetch);

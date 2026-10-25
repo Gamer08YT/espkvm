@@ -30,7 +30,7 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== a recording as a transport stream, and its keystroke subtitles =="
     sh "$here/components/kvm_record/test/run.sh"
     echo
-    echo "== two things on one pin =="
+    echo "== two things on one pin, and device profiles =="
     sh "$here/components/kvm_config/test/run.sh"
     echo
     echo "== reading a runbook =="

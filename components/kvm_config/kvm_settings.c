@@ -17,6 +17,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "pin_conflict.h"
+#include "settings_priv.h"
 
 static const char *TAG = "kvm_cfg";
 
@@ -38,6 +39,11 @@ typedef struct {
 static const kvm_setting_t *s_table;
 static size_t s_count;
 static value_t *s_values;
+/* The active profile's own values, over s_values where s_over_set says so.
+ * Empty while Default is active. Strings get a buffer only for the keys a
+ * profile may hold. */
+static value_t *s_over;
+static bool *s_over_set;
 static SemaphoreHandle_t s_mu;
 static subscriber_t s_subs[MAX_SUBSCRIBERS];
 static uint8_t s_sub_count;
@@ -81,6 +87,12 @@ static int32_t numeric_min(const kvm_setting_t *d)
 static int32_t numeric_max(const kvm_setting_t *d)
 {
     return d->type == KVM_VT_BOOL ? 1 : d->max;
+}
+
+/** The value in effect. Call under the lock. */
+static const value_t *eff(size_t idx)
+{
+    return s_over_set[idx] ? &s_over[idx] : &s_values[idx];
 }
 
 static void notify(const char *key)
@@ -152,12 +164,18 @@ esp_err_t kvm_settings_init(void)
     ESP_RETURN_ON_FALSE(s_mu, ESP_ERR_NO_MEM, TAG, "mutex");
 
     s_values = calloc(s_count, sizeof(value_t));
-    ESP_RETURN_ON_FALSE(s_values, ESP_ERR_NO_MEM, TAG, "values");
+    s_over = calloc(s_count, sizeof(value_t));
+    s_over_set = calloc(s_count, sizeof(bool));
+    ESP_RETURN_ON_FALSE(s_values && s_over && s_over_set, ESP_ERR_NO_MEM, TAG, "values");
 
     for (size_t i = 0; i < s_count; i++) {
         if (!is_numeric(&s_table[i])) {
             s_values[i].s = calloc(1, (size_t)s_table[i].max_len + 1u);
             ESP_RETURN_ON_FALSE(s_values[i].s, ESP_ERR_NO_MEM, TAG, "string %s", s_table[i].key);
+            if (s_table[i].flags & KVM_SF_PROFILE) {
+                s_over[i].s = calloc(1, (size_t)s_table[i].max_len + 1u);
+                ESP_RETURN_ON_FALSE(s_over[i].s, ESP_ERR_NO_MEM, TAG, "string %s", s_table[i].key);
+            }
         }
     }
 
@@ -182,6 +200,7 @@ esp_err_t kvm_settings_init(void)
     migrate_update_url(nvs);
     nvs_close(nvs);
     ESP_LOGI(TAG, "%u settings loaded", (unsigned)s_count);
+    profiles_init();
     return ESP_OK;
 }
 
@@ -204,7 +223,10 @@ int32_t kvm_setting_int(const char *key)
         ESP_LOGW(TAG, "read of unknown numeric setting '%s'", key ? key : "(null)");
         return 0;
     }
-    return s_values[idx].i;
+    lock();
+    int32_t v = eff((size_t)idx)->i;
+    unlock();
+    return v;
 }
 
 bool kvm_setting_bool(const char *key)
@@ -222,7 +244,10 @@ const char *kvm_setting_str(const char *key)
         ESP_LOGW(TAG, "read of unknown string setting '%s'", key ? key : "(null)");
         return "";
     }
-    return s_values[idx].s;
+    lock();
+    const char *v = eff((size_t)idx)->s;
+    unlock();
+    return v;
 }
 
 static esp_err_t persist_int(const char *key, int32_t value)
@@ -266,14 +291,27 @@ esp_err_t kvm_setting_set_int(const char *key, int32_t value)
                         "'%s' out of range", key);
 
     lock();
-    bool changed = s_values[idx].i != value;
-    s_values[idx].i = value;
+    const bool to_profile = (d->flags & KVM_SF_PROFILE) && profiles_custom_active();
+    bool changed = eff((size_t)idx)->i != value;
+    if (!to_profile) {
+        s_values[idx].i = value;
+    } else if (changed) {
+        s_over[idx].i = value;
+        s_over_set[idx] = true;
+    }
     unlock();
 
     if (!changed) {
         return ESP_OK;
     }
-    esp_err_t err = persist_int(key, value);
+    esp_err_t err;
+    if (to_profile) {
+        cJSON *n = cJSON_CreateNumber(value);
+        err = n ? profiles_store(key, n) : ESP_ERR_NO_MEM;
+        cJSON_Delete(n);
+    } else {
+        err = persist_int(key, value);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "persist '%s': %s", key, esp_err_to_name(err));
     }
@@ -291,16 +329,28 @@ esp_err_t kvm_setting_set_str(const char *key, const char *value)
     ESP_RETURN_ON_FALSE(strlen(value) <= d->max_len, ESP_ERR_INVALID_SIZE, TAG, "'%s' too long", key);
 
     lock();
-    bool changed = strcmp(s_values[idx].s, value) != 0;
+    const bool to_profile = (d->flags & KVM_SF_PROFILE) && profiles_custom_active();
+    bool changed = strcmp(eff((size_t)idx)->s, value) != 0;
     if (changed) {
-        strlcpy(s_values[idx].s, value, (size_t)d->max_len + 1u);
+        value_t *v = to_profile ? &s_over[idx] : &s_values[idx];
+        strlcpy(v->s, value, (size_t)d->max_len + 1u);
+        if (to_profile) {
+            s_over_set[idx] = true;
+        }
     }
     unlock();
 
     if (!changed) {
         return ESP_OK;
     }
-    esp_err_t err = persist_str(key, value);
+    esp_err_t err;
+    if (to_profile) {
+        cJSON *n = cJSON_CreateString(value);
+        err = n ? profiles_store(key, n) : ESP_ERR_NO_MEM;
+        cJSON_Delete(n);
+    } else {
+        err = persist_str(key, value);
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "persist '%s': %s", key, esp_err_to_name(err));
     }
@@ -350,10 +400,12 @@ esp_err_t kvm_settings_reset(void)
         nvs_close(nvs);
     }
 
+    profiles_reset();
     lock();
     s_install_id[0] = '\0';
     for (size_t i = 0; i < s_count; i++) {
         const kvm_setting_t *d = &s_table[i];
+        s_over_set[i] = false;
         if (is_numeric(d)) {
             s_values[i].i = d->def;
         } else {
@@ -470,6 +522,9 @@ char *kvm_settings_schema_json(void)
         if (d->flags & KVM_SF_PIN) {
             cJSON_AddBoolToObject(o, "pin", true);
         }
+        if (d->flags & KVM_SF_PROFILE) {
+            cJSON_AddBoolToObject(o, "profile", true);
+        }
         if (d->visible_key) {
             cJSON *si = cJSON_CreateObject();
             cJSON_AddStringToObject(si, "key", d->visible_key);
@@ -483,7 +538,7 @@ char *kvm_settings_schema_json(void)
     return out;
 }
 
-char *kvm_settings_values_json(void)
+static char *values_json(bool with_profile)
 {
     cJSON *root = cJSON_CreateObject();
     if (!root) {
@@ -495,18 +550,29 @@ char *kvm_settings_values_json(void)
         if (d->flags & KVM_SF_SECRET) {
             continue;
         }
+        const value_t *v = with_profile ? eff(i) : &s_values[i];
         if (d->type == KVM_VT_BOOL) {
-            cJSON_AddBoolToObject(root, d->key, s_values[i].i != 0);
+            cJSON_AddBoolToObject(root, d->key, v->i != 0);
         } else if (is_numeric(d)) {
-            cJSON_AddNumberToObject(root, d->key, s_values[i].i);
+            cJSON_AddNumberToObject(root, d->key, v->i);
         } else {
-            cJSON_AddStringToObject(root, d->key, s_values[i].s);
+            cJSON_AddStringToObject(root, d->key, v->s);
         }
     }
     unlock();
     char *out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return out;
+}
+
+char *kvm_settings_values_json(void)
+{
+    return values_json(true);
+}
+
+char *kvm_settings_default_values_json(void)
+{
+    return values_json(false);
 }
 
 /* The most pin settings this can weigh at once. There are nine today (three
@@ -526,7 +592,7 @@ static int32_t resulting_int(const cJSON *root, size_t idx)
             return (int32_t)it->valuedouble;
         }
     }
-    return s_values[idx].i;
+    return eff(idx)->i;
 }
 
 /*
@@ -677,4 +743,104 @@ esp_err_t kvm_settings_apply_json(const char *json, char *err, size_t err_len)
 
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+size_t settings_count(void)
+{
+    return s_count;
+}
+
+/** Whether @p v fits @p d as it is stored: a number for numeric, else a string. */
+static bool stored_value_ok(const kvm_setting_t *d, const cJSON *v)
+{
+    if (!is_numeric(d)) {
+        return cJSON_IsString(v) && strlen(v->valuestring) <= d->max_len;
+    }
+    if (!cJSON_IsNumber(v)) {
+        return false;
+    }
+    const int32_t i = (int32_t)v->valuedouble;
+    return i >= numeric_min(d) && i <= numeric_max(d);
+}
+
+bool settings_overlay_load(const cJSON *set, bool *changed)
+{
+    bool reboot = false;
+    lock();
+    for (size_t i = 0; i < s_count; i++) {
+        const kvm_setting_t *d = &s_table[i];
+        changed[i] = false;
+        if (!(d->flags & KVM_SF_PROFILE)) {
+            continue;
+        }
+        const cJSON *it = set ? cJSON_GetObjectItemCaseSensitive(set, d->key) : NULL;
+        const bool own = it && stored_value_ok(d, it);
+        if (it && !own) {
+            ESP_LOGW(TAG, "profile value for '%s' does not fit; using Default", d->key);
+        }
+        if (is_numeric(d)) {
+            const int32_t nv = own ? (int32_t)it->valuedouble : s_values[i].i;
+            changed[i] = eff(i)->i != nv;
+            if (own) {
+                s_over[i].i = nv;
+            }
+        } else {
+            const char *nv = own ? it->valuestring : s_values[i].s;
+            changed[i] = strcmp(eff(i)->s, nv) != 0;
+            if (own) {
+                strlcpy(s_over[i].s, nv, (size_t)d->max_len + 1u);
+            }
+        }
+        s_over_set[i] = own;
+        if (changed[i] && (d->flags & KVM_SF_REBOOT)) {
+            reboot = true;
+        }
+    }
+    unlock();
+    return reboot;
+}
+
+void settings_overlay_notify(const bool *changed)
+{
+    for (size_t i = 0; i < s_count; i++) {
+        if (changed[i]) {
+            notify(s_table[i].key);
+        }
+    }
+}
+
+cJSON *settings_profile_value(const char *key, const cJSON *v, char *err, size_t err_len)
+{
+    int idx = key ? find_index(key) : -1;
+    if (idx < 0) {
+        snprintf(err, err_len, "unknown setting '%s'", key ? key : "");
+        return NULL;
+    }
+    const kvm_setting_t *d = &s_table[idx];
+    if (!(d->flags & KVM_SF_PROFILE)) {
+        snprintf(err, err_len, "'%s' is the same for every profile", key);
+        return NULL;
+    }
+    cJSON *out = NULL;
+    if (!is_numeric(d)) {
+        out = cJSON_IsString(v) ? cJSON_CreateString(v->valuestring) : NULL;
+    } else if (cJSON_IsBool(v)) {
+        out = cJSON_CreateNumber(cJSON_IsTrue(v) ? 1 : 0);
+    } else if (cJSON_IsNumber(v)) {
+        out = cJSON_CreateNumber((int32_t)v->valuedouble);
+    } else if (cJSON_IsString(v) && d->type == KVM_VT_ENUM && d->choices) {
+        /* A preset names its choices: "relative" reads better than 1. */
+        for (int32_t c = 0; c <= d->max; c++) {
+            if (strcmp(d->choices[c], v->valuestring) == 0) {
+                out = cJSON_CreateNumber(c);
+                break;
+            }
+        }
+    }
+    if (!out || !stored_value_ok(d, out)) {
+        cJSON_Delete(out);
+        snprintf(err, err_len, "'%s' does not take that value", key);
+        return NULL;
+    }
+    return out;
 }

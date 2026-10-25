@@ -81,6 +81,7 @@ Useful for what it does today, and honest about the rest.
 | Power, reset and Wake-on-LAN | works; power needs an optocoupler or a relay |
 | HDMI-CEC remote | works; on TC358743 boards |
 | A gamepad for a console | works on a Switch |
+| Device profiles: pointer, gamepad and video settings for each target | new, the device picks one from HDMI-CEC or the USB guess |
 | The target's serial console, and its log over the network | works |
 | HTTPS, your own certificate, Let's Encrypt over Tailscale | works |
 | Login, two-factor sign-in, reset by a button | works |

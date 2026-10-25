@@ -51,7 +51,9 @@ be given a URL.
 |---|---|
 | `GET /api/capabilities` | what this device can do, and why it cannot do the rest |
 | `GET /api/v1/settings`, `PUT` | settings, validated and applied as a whole |
-| `GET /api/v1/settings/schema` | title, range and help text for every setting |
+| `GET /api/v1/settings/schema` | title, range and help text for every setting; `profile: true` on the ones a device profile can hold |
+| `GET /api/v1/profiles` | device profiles: the list, the active one, whether it was picked by hand, the presets, and what is attached now (`seen`: CEC name and vendor, USB OS) |
+| `POST /api/v1/profiles`, `/update`, `/delete`, `/select` | make one (`{"name", "from": "current"\|"empty"\|<preset>, "match", "set", "select"}`), change one (`{"id", "name", "match", "set", "unset"}`), delete one, or pick one by hand (`{"id"}`). Default (id 0) cannot be deleted. Each answers with the list, plus `"reboot": true` when the gamepad or the EDID moved and a restart applies it. Settings read and written through `/api/v1/settings` are the active profile's |
 | `POST /api/v1/settings/reset` | put every setting back to its default |
 | `GET /api/v1/system/info` | version, uptime, free memory, chip temperature, thermal state, network, ATX power state |
 | `GET /api/v1/system/memory` | each heap (internal, DMA, PSRAM) with its largest free piece and the lowest it has been, and every task's stack: where it is, its size and how close it has come to the end |
@@ -82,7 +84,7 @@ be given a URL.
 
 | | |
 |---|---|
-| `GET /api/v1/video/status` | resolution, frame rate, bitrate, encoder load, viewers, whether this mode can be read as text, `frames` / `frameAgeMs` (frames captured since boot and how long ago the last one came), and `lagMs` (how long a frame waits and how long sending takes) |
+| `GET /api/v1/video/status` | resolution, frame rate, bitrate, encoder load, viewers, whether this mode can be read as text, `frames` / `frameAgeMs` (frames captured since boot and how long ago the last one came), `lagMs` (how long a frame waits and how long sending takes), and `profile` (the active device profile's id) |
 | `POST /api/v1/video/reconnect` | offer the HDMI source a fresh start: a hotplug cycle, or a reset of the capture chip where there is no hotplug line. The target sees a monitor replugged |
 | `GET /api/v1/video/frame.jpg` | one frame as a JPEG, on either codec |
 | `GET /api/v1/screen/text` | the screen as characters when the target is in a text mode; 204 when it is showing a picture |
