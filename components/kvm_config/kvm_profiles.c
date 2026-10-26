@@ -6,7 +6,9 @@
  *   {"name": "Steam Deck", "match": {"cecName": .., "cecVendor": .., "usbOs": ..},
  *    "set": {"mouse_mode": 1}}
  * plus "active" and "manual". Nothing is written there until the first profile
- * is made, and an older firmware never reads it.
+ * is made, and an older firmware never reads it. Two keys there are for the
+ * console, not for a profile: "welcome" (the first password is set, ask which
+ * devices it will see) and "declined" (presets not to offer again).
  */
 #include "kvm_profiles.h"
 
@@ -45,17 +47,29 @@ typedef struct {
     const char *set; /* JSON; enums by choice name */
 } preset_t;
 
-/* The CEC names and vendor ids are what web/src/state/targetKind.ts knows. */
+/* Console buttons a games console or a TV box has no use for (ids from
+   web/src/ui/features.ts). A profile's own list also brings back what Default
+   hides - the remote and the gamepad on a computer-only setup. */
+#define UI_NO_COMPUTER "\"copy,netlog,select,serial\""
+
+/* The CEC names and vendor ids are what web/src/state/targetKind.ts knows.
+   "declined" keeps a bit per entry, by place: add new ones at the end. */
 static const preset_t k_presets[] = {
     {"steamdeck", "Steam Deck", "Steam Deck", "e0319e", "",
-     "{\"target_os\":\"linux\",\"mouse_mode\":\"relative\",\"ptr_desk_w\":0,\"ptr_desk_h\":0}"},
-    {"switch", "Nintendo Switch", "Nintendo", "0009bf", "", "{\"usb_pad\":\"switch_alone\"}"},
+     "{\"target_os\":\"linux\",\"mouse_mode\":\"relative\",\"ptr_desk_w\":0,\"ptr_desk_h\":0,"
+     "\"ui_hidden\":\"netlog,serial\"}"},
+    {"switch", "Nintendo Switch", "Nintendo", "0009bf", "",
+     /* switch_alone shows it a gamepad only: no keys, no mouse to send. */
+     "{\"usb_pad\":\"switch_alone\","
+     "\"ui_hidden\":\"copy,keyboard,keylock,netlog,padmouse,select,serial\"}"},
     {"androidtv", "Android TV", "", "", "android",
-     "{\"target_os\":\"android\",\"mouse_mode\":\"relative\"}"},
-    /* A stick has no USB to us, only CEC. By name: Xiaomi's vendor id is on
-       other things too. */
+     "{\"target_os\":\"android\",\"mouse_mode\":\"relative\",\"ui_hidden\":" UI_NO_COMPUTER "}"},
+    /* A stick has no USB to us, only CEC: its micro-USB is power. So the
+       remote is all there is. By name: Xiaomi's vendor id is on other things
+       too. */
     {"mitvstick", "Mi TV Stick", "Mi TV Stick", "", "",
-     "{\"target_os\":\"android\",\"mouse_mode\":\"relative\"}"},
+     "{\"target_os\":\"android\",\"mouse_mode\":\"relative\",\"ui_hidden\":"
+     "\"copy,gamepad,keyboard,keylock,netlog,padmouse,select,serial,touch\"}"},
 };
 
 static profile_t s_p[KVM_PROFILES_MAX + 1] = {
@@ -68,6 +82,9 @@ static SemaphoreHandle_t s_mu;
 static char s_seen_name[16], s_seen_vendor[8], s_seen_os[12];
 #define FP_LEN 48
 static char s_seen_fp[FP_LEN];
+static bool s_welcome;
+static uint8_t s_declined;
+#define N_PRESETS (sizeof(k_presets) / sizeof(k_presets[0]))
 
 static void lock(void)
 {
@@ -168,6 +185,13 @@ static void write_seen(nvs_handle_t nvs, void *arg)
 
 /* A choice by hand belongs to the device attached now: auto-selection leaves
  * it alone until another device comes. Called with the lock held. */
+static void write_asks(nvs_handle_t nvs, void *arg)
+{
+    (void)arg;
+    (void)nvs_set_u8(nvs, "welcome", s_welcome ? 1 : 0);
+    (void)nvs_set_u8(nvs, "declined", s_declined);
+}
+
 static void hold_for_this_device(void)
 {
     if (s_seen_fp[0]) {
@@ -253,10 +277,13 @@ void profiles_init(void)
         p->used = true;
         cJSON_Delete(o);
     }
-    uint8_t active = 0, manual = 0;
+    uint8_t active = 0, manual = 0, welcome = 0;
     (void)nvs_get_u8(nvs, "active", &active);
     (void)nvs_get_u8(nvs, "manual", &manual);
+    (void)nvs_get_u8(nvs, "welcome", &welcome);
+    (void)nvs_get_u8(nvs, "declined", &s_declined);
     nvs_close(nvs);
+    s_welcome = welcome != 0;
 
     if (active <= KVM_PROFILES_MAX && s_p[active].used && active != KVM_PROFILE_DEFAULT) {
         bool reboot;
@@ -295,6 +322,8 @@ void profiles_reset(void)
     }
     s_active = KVM_PROFILE_DEFAULT;
     s_manual = false;
+    s_welcome = false;
+    s_declined = 0;
     (void)nvs_write(erase_all, NULL);
     unlock();
 }
@@ -311,7 +340,7 @@ bool kvm_profiles_manual(void)
 
 static const preset_t *find_preset(const char *id)
 {
-    for (size_t i = 0; i < sizeof(k_presets) / sizeof(k_presets[0]); i++) {
+    for (size_t i = 0; i < N_PRESETS; i++) {
         if (strcmp(k_presets[i].id, id) == 0) {
             return &k_presets[i];
         }
@@ -352,6 +381,37 @@ static esp_err_t merge_set(cJSON *dst, const cJSON *src, char *err, size_t err_l
     return ESP_OK;
 }
 
+/*
+ * A preset to offer for what is attached now: the device names itself over
+ * CEC, no profile of one's own fits it, and the operator has not said no to
+ * that preset. The USB guess alone is not enough - "android" is a phone as
+ * often as a TV box. Under the lock.
+ */
+static const preset_t *suggestion(void)
+{
+    const kvm_prof_seen_t seen = {s_seen_name, s_seen_vendor, s_seen_os};
+    if (!seen.cec_name[0] && !seen.cec_vendor[0]) {
+        return NULL;
+    }
+    if (s_manual && s_active != KVM_PROFILE_DEFAULT) {
+        return NULL; /* picked by hand for this device already */
+    }
+    for (uint8_t id = 1; id <= KVM_PROFILES_MAX; id++) {
+        const kvm_prof_rule_t r = {s_p[id].cec_name, s_p[id].cec_vendor, s_p[id].usb_os};
+        if (s_p[id].used && kvm_prof_rule_score(&r, &seen) >= 0) {
+            return NULL;
+        }
+    }
+    for (size_t i = 0; i < N_PRESETS; i++) {
+        const preset_t *k = &k_presets[i];
+        const kvm_prof_rule_t r = {k->cec_name, k->cec_vendor, k->usb_os};
+        if (!(s_declined & (1u << i)) && kvm_prof_rule_score(&r, &seen) >= 2) {
+            return k;
+        }
+    }
+    return NULL;
+}
+
 char *kvm_profiles_json(void)
 {
     cJSON *root = cJSON_CreateObject();
@@ -360,6 +420,11 @@ char *kvm_profiles_json(void)
     cJSON_AddBoolToObject(root, "manual", s_manual);
     cJSON_AddNumberToObject(root, "max", KVM_PROFILES_MAX);
     cJSON_AddItemToObject(root, "seen", match_json(s_seen_name, s_seen_vendor, s_seen_os));
+    cJSON_AddBoolToObject(root, "welcome", s_welcome);
+    const preset_t *sug = suggestion();
+    if (sug) {
+        cJSON_AddStringToObject(root, "suggest", sug->id);
+    }
     cJSON *arr = cJSON_AddArrayToObject(root, "profiles");
     for (uint8_t id = 0; id <= KVM_PROFILES_MAX; id++) {
         if (s_p[id].used) {
@@ -368,7 +433,7 @@ char *kvm_profiles_json(void)
     }
     unlock();
     cJSON *pre = cJSON_AddArrayToObject(root, "presets");
-    for (size_t i = 0; i < sizeof(k_presets) / sizeof(k_presets[0]); i++) {
+    for (size_t i = 0; i < N_PRESETS; i++) {
         const preset_t *k = &k_presets[i];
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "id", k->id);
@@ -635,6 +700,42 @@ uint8_t kvm_profiles_pick(const kvm_prof_seen_t *seen)
     const int best = kvm_prof_pick(rules, n, seen);
     unlock();
     return best < 0 ? KVM_PROFILE_DEFAULT : ids[best];
+}
+
+void kvm_profiles_welcome(void)
+{
+    lock();
+    s_welcome = true;
+    (void)nvs_write(write_asks, NULL);
+    unlock();
+}
+
+esp_err_t kvm_profiles_dismiss(const char *json, char *err, size_t err_len)
+{
+    cJSON *body;
+    esp_err_t res = parse_body(json, &body, err, err_len);
+    if (res != ESP_OK) {
+        return res;
+    }
+    const cJSON *w = cJSON_GetObjectItemCaseSensitive(body, "welcome");
+    const cJSON *pre = cJSON_GetObjectItemCaseSensitive(body, "preset");
+    const preset_t *k = cJSON_IsString(pre) ? find_preset(pre->valuestring) : NULL;
+    if (pre && !k) {
+        snprintf(err, err_len, "no such preset");
+        cJSON_Delete(body);
+        return ESP_ERR_INVALID_ARG;
+    }
+    lock();
+    if (cJSON_IsTrue(w)) {
+        s_welcome = false;
+    }
+    if (k) {
+        s_declined |= (uint8_t)(1u << (k - k_presets));
+    }
+    res = nvs_write(write_asks, NULL);
+    unlock();
+    cJSON_Delete(body);
+    return res;
 }
 
 bool kvm_profiles_any(void)

@@ -52,8 +52,11 @@ be given a URL.
 | `GET /api/capabilities` | what this device can do, and why it cannot do the rest |
 | `GET /api/v1/settings`, `PUT` | settings, validated and applied as a whole |
 | `GET /api/v1/settings/schema` | title, range and help text for every setting; `profile: true` on the ones a device profile can hold |
-| `GET /api/v1/profiles` | device profiles: the list, the active one, whether it was picked by hand, the presets, and what is attached now (`seen`: CEC name and vendor, USB OS) |
+| `GET /api/v1/regions` | screen areas: each one's rectangle (parts of the frame, 0..1), mode (`change`, `still`, `like`, `unlike`, `colour`), threshold (% of the area that must differ), hold (seconds), colour, `notify`, `clip`, and `live`: whether it is on, how far off it is, its main colour, how many times it fired |
+| `POST /api/v1/regions`, `/remember` | replace all the areas (`{"regions": [...]}`, up to 8, names unique), or save what area `{"id"}` shows now for `like` / `unlike` |
+| `GET /api/v1/profiles` | device profiles: the list, the active one, whether it was picked by hand, the presets, and what is attached now (`seen`: CEC name and vendor, USB OS). `welcome: true` on a device whose first password was just set (the console asks what it will see), `suggest`: a preset id for the attached device when it names itself over CEC and no profile fits it |
 | `POST /api/v1/profiles`, `/update`, `/delete`, `/select` | make one (`{"name", "from": "current"\|"empty"\|<preset>, "match", "set", "select"}`), change one (`{"id", "name", "match", "set", "unset"}`), delete one, or pick one by hand (`{"id"}`). Default (id 0) cannot be deleted. Each answers with the list, plus `"reboot": true` when the gamepad or the EDID moved and a restart applies it. Settings read and written through `/api/v1/settings` are the active profile's |
+| `POST /api/v1/profiles/dismiss` | `{"welcome": true}` ends the first-run question, `{"preset": "<id>"}` stops `suggest` offering that preset. Answers with the list |
 | `POST /api/v1/settings/reset` | put every setting back to its default |
 | `GET /api/v1/system/info` | version, uptime, free memory, chip temperature, thermal state, network, ATX power state |
 | `GET /api/v1/system/memory` | each heap (internal, DMA, PSRAM) with its largest free piece and the lowest it has been, and every task's stack: where it is, its size and how close it has come to the end |

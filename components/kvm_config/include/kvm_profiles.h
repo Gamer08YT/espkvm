@@ -31,7 +31,10 @@ uint8_t kvm_profiles_active(void);
 /** Whether the active profile was chosen by hand rather than by the device. */
 bool kvm_profiles_manual(void);
 
-/** malloc'd JSON: the profiles, the active one and the presets. Caller frees. */
+/**
+ * malloc'd JSON: the profiles, the active one, the presets, and the console's
+ * questions ("welcome", "suggest"). Caller frees.
+ */
 char *kvm_profiles_json(void);
 
 /**
@@ -56,6 +59,18 @@ esp_err_t kvm_profiles_select(uint8_t id, bool manual, bool *reboot);
 
 /** The profile whose rule fits @p seen best, or KVM_PROFILE_DEFAULT. */
 uint8_t kvm_profiles_pick(const kvm_prof_seen_t *seen);
+
+/**
+ * The first password is set: the console asks once which devices this one
+ * will see ("welcome" in the JSON) and makes profiles for them.
+ */
+void kvm_profiles_welcome(void);
+
+/**
+ * The console's questions, answered: {"welcome": true} ends the first-run one,
+ * {"preset": id} stops "suggest" offering that preset again.
+ */
+esp_err_t kvm_profiles_dismiss(const char *json, char *err, size_t err_len);
 
 /** Whether any profile of one's own exists. */
 bool kvm_profiles_any(void);

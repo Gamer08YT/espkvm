@@ -76,6 +76,10 @@ int main(void)
     long_phrase[69] = '\0';
     CHECK(!rb_parse(long_phrase, &s, err, sizeof(err)) && strstr(err, "at most 63") != NULL);
     CHECK(!rb_parse("wait ok\xc3\xa9", &s, err, sizeof(err)) && strstr(err, "ASCII only") != NULL);
+    /* A screen area may have any name. */
+    CHECK(rb_parse("wait area \xd0\xa1\xd0\xb1\xd0\xbe\xd1\x80\xd0\xba\xd0\xb0\ngone area Build", &s, err, sizeof(err)));
+    CHECK(s.count == 2 && s.steps[0].kind == RB_WAIT && strncmp(s.steps[0].arg, "area ", 5) == 0);
+    CHECK(s.steps[1].kind == RB_GONE && strcmp(s.steps[1].arg, "area Build") == 0);
 
     /* The step cap. */
     char many[RB_MAX_STEPS * 8 + 16];

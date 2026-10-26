@@ -28,6 +28,7 @@
 #include "kvm_atx.h"
 #include "kvm_notify.h"
 #include "kvm_record.h"
+#include "kvm_regions.h"
 #include "kvm_settings.h"
 #include "kvm_storage.h"
 #include "record_priv.h"
@@ -155,6 +156,20 @@ static void poll_task(void *arg)
             (void)kvm_record_event("Screen went one colour", why, sizeof(why));
         }
         flat_seen = flat;
+
+        /* Screen areas set to keep a clip. */
+        static uint32_t area_seen[REGION_MAX + 1];
+        kvm_region_status_t areas[REGION_MAX];
+        const int na = kvm_regions_list(areas, REGION_MAX);
+        for (int i = 0; i < na; i++) {
+            const kvm_region_status_t *a = &areas[i];
+            if (a->events > area_seen[a->id] && a->clip) {
+                char title[RECORD_CHAPTER_TITLE];
+                snprintf(title, sizeof(title), "Area: %.40s", a->name);
+                (void)kvm_record_event(title, why, sizeof(why));
+            }
+            area_seen[a->id] = a->events;
+        }
 
         kvm_atx_status_t atx;
         kvm_atx_status(&atx);

@@ -9,6 +9,7 @@ idf_component_register(
         "totp.c"
         "cec_api.c"
         "profiles_api.c"
+        "regions_api.c"
         "serial_api.c"
         "netlog_api.c"
         "audio_api.c"
@@ -30,6 +31,7 @@ idf_component_register(
         kvm_screentext
         kvm_hid
         kvm_config
+        kvm_regions
         kvm_storage
         kvm_record
         kvm_net

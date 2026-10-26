@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define MOD_LCTRL 0x01
 #define MOD_LSHIFT 0x02
@@ -320,7 +321,9 @@ static bool parse_native(const char *src, rb_script_t *out, char *err, size_t er
                 fail(err, err_cap, line_no, "a phrase is at most 63 characters");
                 return false;
             }
-            for (size_t i = 0; i < rlen; i++) {
+            /* "wait area Name" names a screen area, which may be called anything. */
+            const bool area = rlen > 5 && strncasecmp(arg, "area ", 5) == 0;
+            for (size_t i = 0; i < rlen && !area; i++) {
                 if ((unsigned char)arg[i] >= 0x80) {
                     fail(err, err_cap, line_no, "a phrase is ASCII only - that is all the screen reader knows");
                     return false;

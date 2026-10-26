@@ -16,6 +16,7 @@
  * the list survives a restart and its screenshots do not sit in PSRAM.
  */
 #include "kvm_notify.h"
+#include "kvm_regions.h"
 
 #include "capture.h"
 #include "esp_crt_bundle.h"
@@ -103,9 +104,12 @@ typedef enum {
     SEND_REFUSED,
 } send_res_t;
 
-static send_res_t classify(esp_err_t err, int status)
+static send_res_t classify(int status)
 {
-    if (err == ESP_OK && status >= 200 && status < 300) {
+    /* A 2xx is the server taking it, whatever went wrong with the body after:
+       an HTTP/1.0 answer with no length ends in an error, and sending it again
+       only repeated the message for ever. */
+    if (status >= 200 && status < 300) {
         return SEND_OK;
     }
     if (status >= 400 && status < 500 && status != 408 && status != 429) {
@@ -287,12 +291,12 @@ static send_res_t tg_message(const char *token, const char *chat, const char *te
     }
     esp_http_client_set_header(c, "Content-Type", "application/x-www-form-urlencoded");
     esp_http_client_set_post_field(c, body, n);
-    const esp_err_t err = esp_http_client_perform(c);
+    (void)esp_http_client_perform(c); /* the status says how it went */
     const int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     free(enc);
     free(body);
-    return classify(err, status);
+    return classify(status);
 }
 
 /* sendPhoto: multipart/form-data with the JPEG, caption is the text. Streamed
@@ -340,7 +344,7 @@ static send_res_t tg_photo(const char *token, const char *chat, const char *text
             esp_http_client_write(c, (const char *)jpeg, (int)jpeg_len) == (int)jpeg_len &&
             esp_http_client_write(c, post, pon) == pon) {
             esp_http_client_fetch_headers(c);
-            res = classify(ESP_OK, esp_http_client_get_status_code(c));
+            res = classify(esp_http_client_get_status_code(c));
         }
     }
     esp_http_client_close(c);
@@ -411,7 +415,7 @@ static send_res_t tg_video(const char *token, const char *chat, const char *text
             if (w && sent == size && esp_http_client_write(c, post, pon) == pon) {
                 esp_http_client_fetch_headers(c);
                 const int status = esp_http_client_get_status_code(c);
-                res = classify(ESP_OK, status);
+                res = classify(status);
                 if (res != SEND_OK) {
                     ESP_LOGW(TAG, "telegram video: HTTP %d", status);
                 }
@@ -473,11 +477,11 @@ static send_res_t webhook(const char *url, const char *title, const char *body,
     }
     esp_http_client_set_header(c, "Content-Type", "application/json");
     esp_http_client_set_post_field(c, json, n);
-    const esp_err_t err = esp_http_client_perform(c);
+    (void)esp_http_client_perform(c); /* the status says how it went */
     const int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
     free(json);
-    return classify(err, status);
+    return classify(status);
 }
 
 /* --- delivery ------------------------------------------------------------- */
@@ -1155,6 +1159,22 @@ static void poll_events(void)
                         true);
     }
     s_flat_seen = flat;
+
+    /* Screen areas that asked to be told, one message per event. An id given
+       to a new area starts the count again: catch up, do not send. */
+    static uint32_t s_area_seen[REGION_MAX + 1];
+    kvm_region_status_t areas[REGION_MAX];
+    const int n = kvm_regions_list(areas, REGION_MAX);
+    for (int i = 0; i < n; i++) {
+        const kvm_region_status_t *a = &areas[i];
+        uint32_t *seen = &s_area_seen[a->id];
+        if (a->events > *seen && a->notify) {
+            char body[BODY_MAX];
+            kvm_regions_describe(a, body, sizeof(body));
+            kvm_notify_send("Screen area", body, true);
+        }
+        *seen = a->events;
+    }
 }
 
 static void task(void *arg)

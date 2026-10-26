@@ -246,6 +246,7 @@ const char *h264_err_name(esp_h264_err_t err)
 /* What a working encoder took from internal RAM, measured on the open that
  * succeeded. A rebuild checks the longest free run against it. */
 static size_t s_enc_internal_bytes;
+static size_t s_enc_psram_bytes; /* PSRAM it took, measured the same way */
 
 /*
  * Reserving the reference frame's block does not work on this chip, tried three
@@ -465,6 +466,7 @@ static esp_err_t encoder_open(uint32_t w, uint32_t h)
         .rc = {.bitrate = s_bitrate, .qp_min = H264_QP_MIN, .qp_max = H264_QP_MAX},
     };
     const size_t internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     esp_h264_err_t herr = esp_h264_enc_hw_new(&cfg, &s_enc);
     if (herr != ESP_H264_ERR_OK || !s_enc) {
         /*
@@ -521,9 +523,11 @@ static esp_err_t encoder_open(uint32_t w, uint32_t h)
      */
     const size_t internal_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     s_enc_internal_bytes = internal_before > internal_after ? internal_before - internal_after : 0;
+    const size_t psram_after = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    s_enc_psram_bytes = psram_before > psram_after ? psram_before - psram_after : 0;
     ESP_LOGI(CAPTURE_LOG_TAG, "h264 encoder %" PRIu32 "x%" PRIu32 " @%" PRId32 " fps, %" PRIu32
-             " kbit/s, gop %u, %u KB internal", w, h, fps, s_bitrate / 1000u, s_gop,
-             (unsigned)(s_enc_internal_bytes / 1024));
+             " kbit/s, gop %u, %u KB internal, %u KB PSRAM", w, h, fps, s_bitrate / 1000u, s_gop,
+             (unsigned)(s_enc_internal_bytes / 1024), (unsigned)(s_enc_psram_bytes / 1024));
     return ESP_OK;
 }
 
@@ -560,12 +564,18 @@ static bool wedge_rebuild_if_needed(uint32_t w, uint32_t h)
      * so a picture in blocks is the better of the two. Seen on the bench with
      * 314 KB free and the longest run 132 KB.
      */
+    /* PSRAM the same way: its reference frame is one run of about 3 MB at
+       1080p, and after a day of recordings and uploads the longest free run
+       can be just under that (3008 KB, funcev 2026-10-26). */
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (s_enc_internal_bytes && largest < s_enc_internal_bytes) {
+    const size_t largest_ps = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    if ((s_enc_internal_bytes && largest < s_enc_internal_bytes) ||
+        (s_enc_psram_bytes && largest_ps < s_enc_psram_bytes)) {
         ESP_LOGW(CAPTURE_LOG_TAG,
-                 "keyframes fell, but a new encoder needs %u KB of internal RAM in one piece and "
-                 "the longest free run is %u KB - leaving it alone",
-                 (unsigned)(s_enc_internal_bytes / 1024), (unsigned)(largest / 1024));
+                 "keyframes fell, but a new encoder needs %u KB internal and %u KB PSRAM and the "
+                 "longest free runs are %u and %u KB - leaving it alone",
+                 (unsigned)(s_enc_internal_bytes / 1024), (unsigned)(s_enc_psram_bytes / 1024),
+                 (unsigned)(largest / 1024), (unsigned)(largest_ps / 1024));
         s_wedged = false;
         s_idr_starved = 0;
         s_rebuild_after_us = now + WEDGE_COOLDOWN_US;

@@ -34,6 +34,7 @@
 | Noticing a screen that is one flat colour | works; a stop screen or a blanked output has no characters, but it is one colour and it stays |
 | Watching the screen for words while nobody is looking | works; off by default. Give it phrases, it alerts in the log and in Home Assistant |
 | Guessing the target's OS from how it enumerates USB | works |
+| Screen areas: up to eight rectangles watched for a change, for stillness, for a saved picture or for a colour | new. Notification, dashcam clip, Home Assistant sensor, `wait area` in a runbook. [More](#screen-areas) |
 | Device profiles: pointer, gamepad and video settings for each target | new. Picked by the device from what HDMI-CEC or USB says about the target, or by hand. Presets for a Steam Deck, a Switch, a Mi TV Stick and an Android TV box on USB. [More](#device-profiles) |
 | Wake-on-LAN | works |
 | A gamepad for a console (Switch, original Xbox, Steam Deck, Windows) | works on a Switch (Settings &rarr; Input &rarr; Gamepad &rarr; switch_alone); the wired Xbox 360 pad for Windows and a Steam Deck is not tried on hardware yet. The original Xbox pad (`xbox`) comes from [ZacharyLeahan's fork](https://github.com/ZacharyLeahan/espkvm), where it was tried on a real Xbox; the console's controller port needs an adapter to a USB socket. The console gets a gamepad panel or an overlay over the picture, and a controller on your own computer works through it ([clip](https://www.youtube.com/watch?v=UCSkzGHSKWI)) |
@@ -196,6 +197,30 @@ Linux, Task Manager on Windows - and whether the Meta key is labelled Win, Cmd o
 Super. A `Target OS` setting overrides it when the guess is wrong, or when the
 target never showed enough to tell. If it reads your machine wrong, send that
 trace and a later build can learn it.
+
+## Screen areas
+
+Draw a rectangle on the picture (Automation, Screen areas) and the device
+watches that part of the screen by itself, with no tab open. It cuts the area
+into a 16x16 grid, takes the brightness of each cell five times a second, and
+counts the cells that moved by more than a little. That ignores noise and still
+sees a thin progress bar creep: for one like that, set the threshold to 1%.
+
+An area fires when it:
+
+- **changes**: that share of it is different from the picture it settled on;
+- **stops changing**: nothing moved for so many seconds (an install that is
+  done, or stuck);
+- **looks like the saved picture**, or **no longer does**: press "Save what it
+  shows now" while the screen is the one to wait for;
+- **turns a colour**: the colour most of it has, or any change of colour, for
+  an indicator on a panel that has no other way to say it.
+
+"Has to last" keeps a blink or a passing cursor from counting. Each area can
+send a notification, keep a dashcam clip, and shows in Home Assistant as a
+binary sensor (and its colour as a sensor, in colour mode). A runbook waits for
+one with `wait area Name`, or for it to go off with `gone area Name`. The areas
+are kept in parts of the frame, so a new resolution keeps them in place.
 
 ## Device profiles
 

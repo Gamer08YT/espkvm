@@ -46,6 +46,7 @@
 #include "kvm_thermal.h"
 #include "kvm_settings.h"
 #include "kvm_notify.h"
+#include "kvm_regions.h"
 #include "kvm_cec.h"
 #include "profile_auto.h"
 #include "kvm_sched.h"
@@ -793,6 +794,8 @@ void app_main(void)
     /* The scheduler fires runbooks and power actions on a clock it sets itself. */
     kvm_sched_init();
     kvm_button_init();
+    /* Screen areas: loaded before capture starts feeding them frames. */
+    kvm_regions_init();
     /* Push notifications, on their own low-priority task. */
     kvm_notify_init();
     kvm_record_dashcam_init();

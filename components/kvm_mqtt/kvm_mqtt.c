@@ -14,6 +14,7 @@
  * A last-will on <base>/availability flips the device to "offline" if it drops.
  */
 #include "kvm_mqtt.h"
+#include "kvm_regions.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,6 +271,9 @@ static int build_state(char *b, size_t n)
  * fixed fields. */
 #define STATE_JSON_MAX (SCREENTEXT_ALERT_MAX * 2 + (RUNBOOK_NAME_MAX + RB_ERR_MAX + 32) * 2 + 900)
 static void publish_snapshot(void);      /* defined with the discovery helpers below */
+static void publish_areas(bool force);
+static void publish_area_discovery(void);
+static uint32_t s_area_gen; /* the area set the entities were last announced for */
 static void publish_update_state(bool force);
 
 static void publish_state(void)
@@ -307,6 +311,11 @@ static void alert_cb(void *arg)
     screentext_alert_get(NULL, 0, &seq);
     /* A runbook moving a step is news too. */
     const uint32_t rb_seq = runbook_seq();
+    /* Screen areas: new entities when they were edited, their state when it moved. */
+    if (s_connected && kvm_regions_generation() != s_area_gen) {
+        publish_area_discovery();
+    }
+    publish_areas(false);
     /* An install started from Home Assistant: show its progress there, and
      * one last message when it ends, so the bar does not hang at a number. */
     static bool s_fw_busy;
@@ -337,6 +346,7 @@ static void timer_cb(void *arg)
     publish_state();
     publish_update_state(false);
 }
+
 
 /* ---- Home Assistant discovery ------------------------------------------- */
 
@@ -545,6 +555,95 @@ static void publish_snapshot(void)
     free(jpeg);
 }
 
+/* ---- screen areas --------------------------------------------------------- */
+
+/*
+ * The areas have a topic of their own, <base>/areas, so eight of them do not
+ * crowd the state payload: {"a1":"ON","a1Colour":"red","a1Diff":3, ...}. It is
+ * sent when something in it changes, which the fast timer looks at.
+ */
+static void publish_areas(bool force)
+{
+    if (!s_connected) {
+        return;
+    }
+    static char last[REGION_MAX * 64 + 4];
+    char body[sizeof(last)];
+    kvm_region_status_t a[REGION_MAX];
+    const int n = kvm_regions_list(a, REGION_MAX);
+    int o = snprintf(body, sizeof(body), "{");
+    for (int i = 0; i < n; i++) {
+        o += snprintf(body + o, sizeof(body) - o, "%s\"a%u\":\"%s\",\"a%uColour\":\"%s\",\"a%uDiff\":%u",
+                      i ? "," : "", a[i].id, a[i].active ? "ON" : "OFF", a[i].id,
+                      region_colour_name(a[i].colour), a[i].id, a[i].diff);
+    }
+    snprintf(body + o, sizeof(body) - o, "}");
+    if (!force && strcmp(body, last) == 0) {
+        return;
+    }
+    strcpy(last, body);
+    char topic[160];
+    snprintf(topic, sizeof(topic), "%s/areas", s_base_topic);
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    if (s_client) {
+        esp_mqtt_client_publish(s_client, topic, body, 0, 1, 1);
+    }
+    xSemaphoreGive(s_mtx);
+}
+
+/* One entity of an area. The name is the operator's, so it is escaped. */
+static void disco_area(const char *comp, const char *obj, const char *label, const char *name,
+                       const char *field, const char *icon)
+{
+    char esc[REGION_NAME_MAX * 2];
+    json_escape(esc, sizeof(esc), name);
+    char j[DISCO_JSON_MAX];
+    const int o = snprintf(j, sizeof(j),
+                           "{\"~\":\"%s\",\"name\":\"%s%s\",\"stat_t\":\"~/areas\","
+                           "\"avty_t\":\"~/availability\",\"val_tpl\":\"{{ value_json.%s }}\","
+                           "\"uniq_id\":\"%s_%s\",\"ic\":\"%s\",\"dev\":%s}",
+                           s_base_topic, label, esc, field, s_devid, obj, icon, s_dev_json);
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_disco, comp, s_devid, obj);
+    if (disco_fits(o, obj)) {
+        pub(topic, j, 1);
+    }
+}
+
+/* A binary sensor per area, and its colour where it watches one. Slots not in
+   use are taken away, or a deleted area would linger in Home Assistant. */
+static void publish_area_discovery(void)
+{
+    s_area_gen = kvm_regions_generation();
+    kvm_region_status_t a[REGION_MAX];
+    const int n = kvm_regions_list(a, REGION_MAX);
+    for (unsigned id = 1; id <= REGION_MAX; id++) {
+        const kvm_region_status_t *x = NULL;
+        for (int i = 0; i < n; i++) {
+            if (a[i].id == id) {
+                x = &a[i];
+            }
+        }
+        char obj[16], obj_c[16], field[16];
+        snprintf(obj, sizeof(obj), "area%u", id);
+        snprintf(obj_c, sizeof(obj_c), "area%uc", id);
+        if (!x) {
+            disco_clear("binary_sensor", obj);
+            disco_clear("sensor", obj_c);
+            continue;
+        }
+        snprintf(field, sizeof(field), "a%u", id);
+        disco_area("binary_sensor", obj, "Area: ", x->name, field, "mdi:selection-search");
+        if (x->mode == REGION_COLOUR) {
+            snprintf(field, sizeof(field), "a%uColour", id);
+            disco_area("sensor", obj_c, "Area colour: ", x->name, field, "mdi:palette");
+        } else {
+            disco_clear("sensor", obj_c);
+        }
+    }
+    publish_areas(true);
+}
+
 static void publish_discovery(void)
 {
     disco_sensor("sensor", "temp", "Temperature", "{{ value_json.tempC }}", "temperature", "°C",
@@ -619,6 +718,7 @@ static void publish_discovery(void)
         disco_clear("button", "btn_wol");
     }
     disco_button("btn_restart", "Restart ESP-KVM", "restart", "mdi:restart", "diagnostic");
+    publish_area_discovery();
 
     /* The jiggler, as a switch and the interval beside it: the point of having
      * it here is an automation - quiet during the day, awake at night. */

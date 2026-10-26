@@ -4,6 +4,7 @@ idf_component_register(
     REQUIRES
         esp_common
     PRIV_REQUIRES
+        kvm_regions
         video_pipeline
         kvm_hid
         kvm_config

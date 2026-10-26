@@ -10,6 +10,7 @@
  * here; how those pixels become bytes on the wire lives in the codec modules.
  */
 #include "capture_priv.h"
+#include "kvm_regions.h"
 #include "capture.h"
 #include "fps_gate.h"
 
@@ -52,6 +53,7 @@
 
 #if CAPTURE_EARLY_ENCODE
 #define EARLY_LEAD_LINES 32
+
 
 static esp_timer_handle_t s_wake_timer;
 static TaskHandle_t s_loop_task;
@@ -268,6 +270,45 @@ static const capture_codec_t *codec_switch(const capture_codec_t *from, const ca
     return NULL;
 }
 
+/* The screen areas look at the same frame, at the same moment, as the text
+   reader and the flat-colour check: held, in cache, still in capture order.
+   24-bit frames land blue first. */
+static void regions_tick(capture_ctx_t *c, const void *src)
+{
+    const region_frame_t f = {
+        .px = src,
+        .w = (uint16_t)c->hres,
+        .h = (uint16_t)c->vres,
+        .bytes_per_px = (uint8_t)capture_pixfmt_bytes(),
+        .luma_off = capture_pixfmt()->luma_first ? 0u : 1u,
+        .bgr = true,
+    };
+    kvm_regions_scan(&f);
+}
+
+/* With nobody watching nothing is encoded. An area that reports somewhere
+   still gets its look: hold the newest frame, at the areas' own pace. */
+static void regions_idle(capture_ctx_t *c)
+{
+    if (!c->signal_present || !kvm_regions_due_unwatched()) {
+        return;
+    }
+    portENTER_CRITICAL(&c->fb_lock);
+    const int hidx = c->ready_fb_idx;
+    c->held_fb_idx = hidx;
+    portEXIT_CRITICAL(&c->fb_lock);
+    if (hidx < 0) {
+        return;
+    }
+    void *src = c->fb[hidx];
+    if (esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C) == ESP_OK) {
+        regions_tick(c, src);
+    }
+    portENTER_CRITICAL(&c->fb_lock);
+    c->held_fb_idx = -1;
+    portEXIT_CRITICAL(&c->fb_lock);
+}
+
 void capture_loop_run(capture_ctx_t *c)
 {
     video_frame_store_init();
@@ -443,6 +484,7 @@ void capture_loop_run(capture_ctx_t *c)
             /* Nobody to encode for - but a watch set to look for words on the
              * screen exists for exactly this state, so give it the frame. */
             capture_screentext_idle(c);
+            regions_idle(c);
             continue;
         }
 
@@ -549,6 +591,7 @@ void capture_loop_run(capture_ctx_t *c)
             ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
             capture_screentext_tick(c, src);
             capture_flat_tick(c, src);
+            regions_tick(c, src);
         }
 
 #if CAPTURE_YUV_SWAP
@@ -601,6 +644,7 @@ void capture_loop_run(capture_ctx_t *c)
                 ESP_ERROR_CHECK(esp_cache_msync(src, c->frame_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C));
                 capture_screentext_tick(c, src);
                 capture_flat_tick(c, src);
+                regions_tick(c, src);
                 capture_snapshot_tick(c, src);
             }
             early_next = true;

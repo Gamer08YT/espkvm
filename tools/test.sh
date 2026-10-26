@@ -33,6 +33,9 @@ if [ "$what" = all ] || [ "$what" = host ]; then
     echo "== two things on one pin, and device profiles =="
     sh "$here/components/kvm_config/test/run.sh"
     echo
+    echo "== screen areas =="
+    sh "$here/components/kvm_regions/test/run.sh"
+    echo
     echo "== reading a runbook =="
     sh "$here/components/kvm_runbook/test/run.sh"
     echo

@@ -28,6 +28,7 @@ idf_component_register(
         tc358743
         kvm_board
         kvm_screentext
+        kvm_regions
         espressif__esp_h264
         esp_driver_ppa
         esp_driver_gpio

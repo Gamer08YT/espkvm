@@ -4,6 +4,7 @@ idf_component_register(
     REQUIRES
         esp_common
     PRIV_REQUIRES
+        kvm_regions
         esp_http_client
         esp-tls
         esp_timer

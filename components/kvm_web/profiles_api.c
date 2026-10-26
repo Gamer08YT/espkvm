@@ -10,6 +10,7 @@
  *   POST /api/v1/profiles/update   {"id", "name", "match", "set", "unset"}
  *   POST /api/v1/profiles/delete   {"id"}
  *   POST /api/v1/profiles/select   {"id"}
+ *   POST /api/v1/profiles/dismiss  {"welcome": true} or {"preset": id}
  *
  * Every POST answers with the list as GET does, plus "reboot": true when a
  * value that needs a restart moved.
@@ -178,12 +179,29 @@ static esp_err_t profiles_select(httpd_req_t *req)
     return answer(req, res, "", reboot);
 }
 
+static esp_err_t profiles_dismiss(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    esp_err_t sent;
+    char *body = read_body(req, &sent);
+    if (!body) {
+        return sent;
+    }
+    char err[96] = "";
+    esp_err_t res = kvm_profiles_dismiss(body, err, sizeof(err));
+    free(body);
+    return answer(req, res, err, false);
+}
+
 static const httpd_uri_t s_routes[] = {
     {.uri = "/api/v1/profiles", .method = HTTP_GET, .handler = profiles_get},
     {.uri = "/api/v1/profiles", .method = HTTP_POST, .handler = profiles_create},
     {.uri = "/api/v1/profiles/update", .method = HTTP_POST, .handler = profiles_update},
     {.uri = "/api/v1/profiles/delete", .method = HTTP_POST, .handler = profiles_delete},
     {.uri = "/api/v1/profiles/select", .method = HTTP_POST, .handler = profiles_select},
+    {.uri = "/api/v1/profiles/dismiss", .method = HTTP_POST, .handler = profiles_dismiss},
 };
 
 const httpd_uri_t *profiles_api_routes(size_t *count)

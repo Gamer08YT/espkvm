@@ -11,4 +11,5 @@ idf_component_register(
         kvm_screentext
         kvm_record
         kvm_cec
+        kvm_regions
 )

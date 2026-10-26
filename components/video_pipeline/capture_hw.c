@@ -6,6 +6,7 @@
  * Derived from the p4kvm project: https://github.com/jrowny/p4kvm
  */
 #include "capture_priv.h"
+#include "kvm_regions.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -1048,6 +1049,7 @@ static void capture_monitor_task(void *arg)
                  * screen the target is no longer showing. */
                 capture_screentext_forget();
                 capture_flat_forget();
+                kvm_regions_forget();
             }
 
             /*

@@ -10,6 +10,7 @@
  * capture side reads those only on request.
  */
 #include "runbook.h"
+#include "kvm_regions.h"
 
 #include "kvm_record.h"
 #include "kvm_cec.h"
@@ -29,6 +30,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 static const char *TAG = "runbook";
 
@@ -131,8 +133,52 @@ static bool type_text(const char *text)
 }
 
 /* 0 = satisfied, -1 = timed out (msg says so), -2 = stopped. */
+/* "wait area Name" / "gone area Name": a screen area instead of a phrase. A
+   moment (a change) is waited for afresh; a state just has to hold. */
+static int wait_area(const rb_step_t *st, const char *name, uint32_t timeout_s, char *msg, size_t cap)
+{
+    const bool want = st->kind == RB_WAIT;
+    const int64_t deadline = esp_timer_get_time() + (int64_t)timeout_s * 1000000;
+    kvm_region_status_t a;
+    if (!kvm_regions_find(name, &a)) {
+        snprintf(msg, cap, "line %u: there is no screen area called \"%s\"", (unsigned)st->line, name);
+        return -1;
+    }
+    const uint32_t from = a.events;
+    kvm_regions_waiting(true); /* looks go on with the console closed */
+    int r;
+    for (;;) {
+        if (s_stop) {
+            r = -2;
+            break;
+        }
+        if (!kvm_regions_find(name, &a)) {
+            snprintf(msg, cap, "line %u: the screen area \"%s\" was removed", (unsigned)st->line, name);
+            r = -1;
+            break;
+        }
+        const bool met = want ? (kvm_regions_is_moment(&a) ? a.events != from : a.active) : !a.active;
+        if (met) {
+            r = 0;
+            break;
+        }
+        if (esp_timer_get_time() > deadline) {
+            snprintf(msg, cap, "line %u: area \"%s\" %s after %u s", (unsigned)st->line, name,
+                     want ? "did not fire" : "is still on", (unsigned)timeout_s);
+            r = -1;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+    }
+    kvm_regions_waiting(false);
+    return r;
+}
+
 static int wait_phrase(const rb_step_t *st, uint32_t timeout_s, char *msg, size_t cap)
 {
+    if (strncasecmp(st->arg, "area ", 5) == 0 && st->arg[5]) {
+        return wait_area(st, st->arg + 5, timeout_s, msg, cap);
+    }
     const bool want = st->kind == RB_WAIT;
     const int64_t deadline = esp_timer_get_time() + (int64_t)timeout_s * 1000000;
     uint32_t seen = UINT32_MAX;

@@ -10,6 +10,7 @@ idf_component_register(
         kvm_runbook
         kvm_sched
         kvm_notify
+        kvm_regions
         kvm_cec
         kvm_config
         kvm_log

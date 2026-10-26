@@ -7,6 +7,47 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-10-26
+
+### Added
+- Screen areas. Draw up to eight rectangles on the picture, and the device
+  watches them by itself: for a change, for a picture that stops moving, for
+  one it has saved, or for a colour. An area can send a notification, keep a
+  dashcam clip and show in Home Assistant, and a runbook can wait for one with
+  `wait area Name`. Automation panel. API: `/api/v1/regions`.
+- The touch remote can sit as a bar under the picture instead of floating
+  over it: the button at its end docks it, and the console remembers.
+- Graphs of the frame rate and the bitrate over the last minute in the Video
+  readout. Touch or point at one for the value at that moment.
+- A new device asks once what it will be plugged into: a server, a media or
+  gaming PC, a Steam Deck, a Switch, an Android TV box. Pick all that fit, or
+  skip it. Each device gets a profile with settings that suit it.
+- A device that names itself over HDMI-CEC and has no profile yet gets an
+  offer to make one. "Never for it" stops the offer for that device.
+- The device presets hide the console buttons that make no sense there: a
+  Switch gets no keyboard button, a Mi TV Stick (its USB is power only) keeps
+  the TV remote and little else.
+
+### Changed
+- On a phone held upright the picture sits at the top, with the free space
+  under it in one piece for the thumb.
+- On a phone on its side the bottom bar keeps to one row, the rest goes
+  behind More, so the picture gets the height.
+- More on a phone is a list with words, not icons alone.
+- Settings on a phone: the sections are one row that scrolls sideways, and
+  the profile line takes one row.
+
+### Fixed
+- The search box in Settings, the log and the recordings looked disabled.
+- On a phone the Num, Caps and Scroll lights were meant to hide and did not,
+  so the bottom bar ran off the right edge.
+- A webhook that answered 200 with no length (a plain HTTP/1.0 reply) got
+  the same notification again and again: the device took the answer for a
+  failure.
+- After hours of uptime the stream could switch to MJPEG until a restart.
+  The H.264 encoder got rebuilt when the picture turned simple, and the new
+  one found no room in PSRAM. Now it is rebuilt only when the room is there.
+
 ## [0.72.0] - 2026-10-25
 
 ### Added

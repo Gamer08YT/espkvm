@@ -25,6 +25,7 @@
 #include "qrcode.h"
 
 #include "kvm_board.h"
+#include "kvm_profiles.h"
 #include "kvm_settings.h"
 #include "http_recv.h"
 #include "http_server.h" /* kvm_web_security_headers: the auth routes register themselves */
@@ -1400,12 +1401,16 @@ static esp_err_t auth_password_post(httpd_req_t *req)
         memset(next, 0, sizeof(next));
         return send_json(req, "403 Forbidden", "{\"error\":\"the current password is wrong\"}");
     }
+    const bool first = !s_have_password;
     esp_err_t err = store_password(next);
     memset(current, 0, sizeof(current));
     memset(next, 0, sizeof(next));
     if (err != ESP_OK) {
         return send_json(req, "500 Internal Server Error",
                          "{\"error\":\"the new password could not be stored\"}");
+    }
+    if (first) {
+        kvm_profiles_welcome(); /* a new device: the console asks what it will see */
     }
 
     /* Every session was established under the old password. Ending them is

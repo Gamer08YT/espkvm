@@ -5103,6 +5103,11 @@ httpd_handle_t http_server_start(void)
     for (size_t i = 0; i < n_prof; i++) {
         register_route(h, &prof_uris[i]);
     }
+    size_t n_rgn = 0;
+    const httpd_uri_t *rgn_uris = regions_api_routes(&n_rgn);
+    for (size_t i = 0; i < n_rgn; i++) {
+        register_route(h, &rgn_uris[i]);
+    }
     size_t n_fetch = 0;
     const httpd_uri_t *fetch_uris = url_fetch_routes(&n_fetch);
     for (size_t i = 0; i < n_fetch; i++) {

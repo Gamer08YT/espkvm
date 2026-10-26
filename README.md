@@ -82,6 +82,7 @@ Useful for what it does today, and honest about the rest.
 | HDMI-CEC remote | works; on TC358743 boards |
 | A gamepad for a console | works on a Switch |
 | Device profiles: pointer, gamepad and video settings for each target | new, the device picks one from HDMI-CEC or the USB guess |
+| Screen areas: react when a part of the screen changes, stops changing, matches a saved picture or turns a colour | new |
 | The target's serial console, and its log over the network | works |
 | HTTPS, your own certificate, Let's Encrypt over Tailscale | works |
 | Login, two-factor sign-in, reset by a button | works |

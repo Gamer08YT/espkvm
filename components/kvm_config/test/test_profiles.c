@@ -131,7 +131,10 @@ static void deck(void)
     CHECK(!reboot);
     CHECK(kvm_profiles_active() == 1 && kvm_profiles_manual());
     CHECK(kvm_setting_int("target_os") == 3);
-    CHECK(s_notified == 1 && strcmp(s_last_key, "target_os") == 0);
+    /* target_os and the hidden buttons changed; mouse_mode and the desk did not
+       (the defaults already). */
+    CHECK(s_notified == 2);
+    CHECK(strcmp(kvm_setting_str("ui_hidden"), "netlog,serial") == 0);
 
     /* A profile key goes to the profile, anything else to Default. */
     CHECK(kvm_setting_set_int("mouse_sens", 250) == ESP_OK);
@@ -346,6 +349,84 @@ static void after_reset(void)
     CHECK(kvm_setting_int("mouse_sens") != 250);
 }
 
+/* What "suggest" says in the list now, or "" for nothing. */
+static const char *suggested(cJSON *p)
+{
+    const cJSON *s = cJSON_GetObjectItem(p, "suggest");
+    return cJSON_IsString(s) ? s->valuestring : "";
+}
+
+static bool welcome_on(void)
+{
+    cJSON *p = profiles();
+    const bool on = cJSON_IsTrue(cJSON_GetObjectItem(p, "welcome"));
+    cJSON_Delete(p);
+    return on;
+}
+
+/* The first-run question and the offer for an attached device. */
+static void asks(void)
+{
+    CHECK(!welcome_on());
+    kvm_profiles_welcome();
+    CHECK(welcome_on());
+
+    const kvm_prof_seen_t deck = {"Steam Deck", "e0319e", "linux"};
+    kvm_profiles_note_seen(&deck, "Steam Deck|e0319e|linux");
+    cJSON *p = profiles();
+    CHECK(strcmp(suggested(p), "steamdeck") == 0);
+    cJSON_Delete(p);
+
+    /* The USB guess alone offers nothing: a phone says android too. */
+    const kvm_prof_seen_t phone = {"", "", "android"};
+    kvm_profiles_note_seen(&phone, "||android");
+    p = profiles();
+    CHECK(strcmp(suggested(p), "") == 0);
+    cJSON_Delete(p);
+
+    /* Said no to the Deck: not offered again. */
+    char err[96];
+    CHECK(kvm_profiles_dismiss("{\"preset\":\"steamdeck\"}", err, sizeof(err)) == ESP_OK);
+    CHECK(kvm_profiles_dismiss("{\"preset\":\"nope\"}", err, sizeof(err)) == ESP_ERR_INVALID_ARG);
+    kvm_profiles_note_seen(&deck, "Steam Deck|e0319e|linux");
+    p = profiles();
+    CHECK(strcmp(suggested(p), "") == 0);
+    cJSON_Delete(p);
+
+    /* A Switch is, until it has a profile of its own. */
+    const kvm_prof_seen_t sw = {"NintendoSwitch", "0009bf", "linux"};
+    kvm_profiles_note_seen(&sw, "NintendoSwitch|0009bf|linux");
+    p = profiles();
+    CHECK(strcmp(suggested(p), "switch") == 0);
+    cJSON_Delete(p);
+    bool reboot;
+    (void)create("{\"from\":\"switch\",\"select\":false}", &reboot);
+    p = profiles();
+    CHECK(strcmp(suggested(p), "") == 0);
+    cJSON_Delete(p);
+}
+
+/* Both answers survive a restart; a reset forgets them. */
+static void asks_after(void)
+{
+    CHECK(welcome_on());
+    const kvm_prof_seen_t deck = {"Steam Deck", "e0319e", "linux"};
+    kvm_profiles_note_seen(&deck, "Steam Deck|e0319e|linux");
+    cJSON *p = profiles();
+    CHECK(strcmp(suggested(p), "") == 0);
+    cJSON_Delete(p);
+    char err[96];
+    CHECK(kvm_profiles_dismiss("{\"welcome\":true}", err, sizeof(err)) == ESP_OK);
+    CHECK(!welcome_on());
+
+    kvm_profiles_welcome();
+    CHECK(kvm_settings_reset() == ESP_OK);
+    CHECK(!welcome_on());
+    p = profiles();
+    CHECK(strcmp(suggested(p), "steamdeck") == 0);
+    cJSON_Delete(p);
+}
+
 int main(void)
 {
     fake_nvs_clear();
@@ -358,6 +439,8 @@ int main(void)
     bad += run(auto_pick);
     bad += run(reset);
     bad += run(after_reset);
+    bad += run(asks);
+    bad += run(asks_after);
     if (bad) {
         printf("profiles: %d phase(s) failed\n", bad);
         return 1;
