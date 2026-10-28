@@ -21,6 +21,7 @@
 #include "sdkconfig.h"
 #include "soc/usb_dwc_struct.h"
 #include "tinyusb.h"
+#include "tinyusb_cdc_acm.h"
 #include "tinyusb_default_config.h"
 
 #include "kvm_caps.h"
@@ -84,6 +85,21 @@ enum {
  * three HID interrupt IN endpoints 0x81/0x82/0x83. */
 #define EPNUM_MSC_OUT 0x04
 #define EPNUM_MSC_IN 0x84
+
+/* The serial port: a notify endpoint and a bulk pair. The notify one is the
+ * gamepad's number, so the two never come together: this port has 7 IN
+ * endpoints besides EP0, and the pad plus the serial port would want 8. */
+#define EPNUM_CDC_NOTIF 0x85
+#define EPNUM_CDC_OUT 0x06
+#define EPNUM_CDC_IN 0x86
+#define STR_CDC 8 /* its interface name in s_string_descriptor */
+
+/* Espressif's VID with the product IDs esp_tinyusb would compute (bit 0 = CDC):
+ * the plain device keeps the ID it always had, the one with a serial port gets
+ * its own so a target never mixes up the two. */
+#define KVM_USB_VID 0x303A
+#define KVM_USB_PID 0x4012
+#define KVM_USB_PID_CDC 0x4013
 
 /** Report IDs on the ITF_POINTER interface. Other interfaces use none. */
 enum {
@@ -215,9 +231,9 @@ typedef struct __attribute__((packed)) {
 
 /* Order matters: the string index each interface names below is this array's
  * subscript. 0 is the language ID, 1..3 are the device strings, 4+ name the
- * interfaces (keyboard 4, pointer 5, relative mouse 6, virtual media 7). Eight
- * is esp_tinyusb's limit, so the gamepad's interface has no name - nor does the
- * real pad's. Not const: the gamepad modes swap in the pad's own names. */
+ * interfaces (keyboard 4, pointer 5, relative mouse 6, virtual media 7, serial
+ * port 8). The gamepad's interface has no name - nor does the real pad's. Not
+ * const: the gamepad modes swap in the pad's own names. */
 static const char *s_string_descriptor[] = {
     (char[]){0x09, 0x04},
     "ESP-KVM",
@@ -227,6 +243,27 @@ static const char *s_string_descriptor[] = {
     "Pointer",
     "Relative Mouse",
     "Virtual Media",
+    "ESP-KVM Serial Console",
+};
+
+/* The device itself when no gamepad stands in for it. bDeviceClass is patched
+ * to "see the IADs" when the serial port is on: Windows needs that to bind a
+ * CDC function inside a composite device. */
+static tusb_desc_device_t s_kvm_device_desc = {
+    .bLength = sizeof(tusb_desc_device_t),
+    .bDescriptorType = TUSB_DESC_DEVICE,
+    .bcdUSB = 0x0200,
+    .bDeviceClass = 0,
+    .bDeviceSubClass = 0,
+    .bDeviceProtocol = 0,
+    .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor = KVM_USB_VID,
+    .idProduct = KVM_USB_PID,
+    .bcdDevice = CONFIG_TINYUSB_DESC_BCD_DEVICE,
+    .iManufacturer = 1,
+    .iProduct = 2,
+    .iSerialNumber = 3,
+    .bNumConfigurations = 1,
 };
 
 /*
@@ -267,7 +304,7 @@ static const tusb_desc_device_t k_pad_device_desc = {
  */
 #define CFG_DESC_MAX                                                                               \
     (TUD_CONFIG_DESC_LEN + NUM_HID_ITF * TUD_HID_DESC_LEN + TUD_HID_INOUT_DESC_LEN +              \
-     XINPUT_IFACE_DESC_LEN + TUD_MSC_DESC_LEN + 64)
+     XINPUT_IFACE_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CDC_DESC_LEN + 64)
 
 /* A placeholder header: wTotalLength and bNumInterfaces are patched in once the
  * enabled blocks are known. */
@@ -330,12 +367,13 @@ static pad_kind_t s_pad_kind;
  * Assemble the configuration descriptor for the enabled functions into @p buf
  * and return its length. HID is always included (only the keyboard when
  * @p kbd_only, only the gamepad when @p pad is PAD_ALONE); @p msc_iface (the
- * speed's MSC block) is appended when @p with_msc. The config header's
- * wTotalLength and bNumInterfaces are then patched to match what was actually
- * emitted.
+ * speed's MSC block) is appended when @p with_msc, and the serial port's two
+ * interfaces after it when @p with_cdc. The config header's wTotalLength and
+ * bNumInterfaces are then patched to match what was actually emitted.
  */
 static size_t build_config_descriptor(uint8_t *buf, bool full_speed, bool kbd_only, pad_mode_t pad,
-                                      bool with_msc, const uint8_t *msc_iface, size_t msc_len)
+                                      bool with_msc, const uint8_t *msc_iface, size_t msc_len,
+                                      bool with_cdc)
 {
     size_t n = 0;
     uint8_t ifaces = 0;
@@ -381,6 +419,17 @@ static size_t build_config_descriptor(uint8_t *buf, bool full_speed, bool kbd_on
         buf[n + 2] = ifaces; /* bInterfaceNumber: next after the HID ones */
         n += msc_len;
         ifaces++;
+    }
+    if (with_cdc) {
+        /* Built here, not kept as a constant: its interface numbers depend on
+         * whether virtual media came first. */
+        const uint8_t cdc[] = {
+            TUD_CDC_DESCRIPTOR(ifaces, STR_CDC, EPNUM_CDC_NOTIF, 16, EPNUM_CDC_OUT, EPNUM_CDC_IN,
+                               full_speed ? 64 : 512),
+        };
+        memcpy(buf + n, cdc, sizeof(cdc));
+        n += sizeof(cdc);
+        ifaces += 2;
     }
     buf[2] = (uint8_t)(n & 0xff); /* wTotalLength, little-endian */
     buf[3] = (uint8_t)(n >> 8);
@@ -808,6 +857,75 @@ void usb_hid_reattach(void)
     ESP_LOGI(TAG, "re-attaching to the target on request (%d ms off the bus)",
              USB_REATTACH_LONG_MS);
     reattach(USB_REATTACH_LONG_MS);
+}
+
+/* ---- serial port (CDC ACM) ---------------------------------------------- */
+/*
+ * A serial port on the cable the target already has: Linux makes it ttyACM0,
+ * macOS cu.usbmodem*, Windows a COM port, all with drivers they ship. What the
+ * target sends goes to the serial console's ring through s_cdc_rx.
+ */
+static bool s_cdc_present;
+static void (*s_cdc_rx)(const uint8_t *data, size_t len);
+static void (*s_cdc_line)(bool dtr);
+
+static void cdc_line_cb(int itf, cdcacm_event_t *event)
+{
+    (void)itf;
+    if (s_cdc_line) {
+        s_cdc_line(event->line_state_changed_data.dtr);
+    }
+}
+
+static void cdc_rx_cb(int itf, cdcacm_event_t *event)
+{
+    (void)event;
+    uint8_t buf[256];
+    size_t n = 0;
+    while (tinyusb_cdcacm_read((tinyusb_cdcacm_itf_t)itf, buf, sizeof(buf), &n) == ESP_OK && n > 0) {
+        if (s_cdc_rx) {
+            s_cdc_rx(buf, n);
+        }
+    }
+}
+
+bool usb_hid_serial_present(void)
+{
+    return s_cdc_present;
+}
+
+void usb_hid_serial_set_rx(void (*cb)(const uint8_t *data, size_t len))
+{
+    s_cdc_rx = cb;
+}
+
+void usb_hid_serial_set_line_state(void (*cb)(bool dtr))
+{
+    s_cdc_line = cb;
+}
+
+size_t usb_hid_serial_write(const void *data, size_t len)
+{
+    if (!s_cdc_present) {
+        return 0;
+    }
+    /*
+     * With the port closed on the target (no DTR) TinyUSB lets the FIFO be
+     * overwritten, so nothing here waits on a reader that is not there. With
+     * it open, give the target up to half a second to take a full FIFO.
+     */
+    const uint8_t *p = data;
+    size_t done = 0;
+    for (int tries = 0; done < len && tries < 50; tries++) {
+        done += tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, p + done, len - done);
+        if (tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0) == ESP_OK && done == len) {
+            break;
+        }
+        if (done < len) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    return done;
 }
 
 /* ---- MSC (virtual media) callbacks -------------------------------------- */
@@ -1678,23 +1796,38 @@ esp_err_t usb_hid_init(void)
     xinput_set_done_cb(xinput_done);
     const bool with_msc = !s_kbd_only && s_pad != PAD_ALONE && kvm_setting_bool("msc_enable");
     s_msc_present = with_msc;
+    /* Not beside a gamepad: the two together want one IN endpoint more than
+     * this port has. */
+    /* usb_serial: 0 off, 1 the serial console, 2 the agent. */
+    const int32_t serial_mode = kvm_setting_int("usb_serial");
+    const bool with_cdc = !s_kbd_only && s_pad == PAD_OFF && serial_mode != 0;
+    s_cdc_present = with_cdc;
+    if (serial_mode == 2) {
+        s_string_descriptor[STR_CDC] = "ESP-KVM Agent";
+    }
     build_config_descriptor(s_fs_config_descriptor, true, s_kbd_only, s_pad, with_msc, k_msc_iface_fs,
-                            sizeof(k_msc_iface_fs));
+                            sizeof(k_msc_iface_fs), with_cdc);
     build_config_descriptor(s_hs_config_descriptor, false, s_kbd_only, s_pad, with_msc, k_msc_iface_hs,
-                            sizeof(k_msc_iface_hs));
+                            sizeof(k_msc_iface_hs), with_cdc);
     if (s_kbd_only) {
         ESP_LOGI(TAG, "USB functions: old BIOS mode - keyboard only, full speed");
     } else if (s_pad == PAD_ALONE) {
         ESP_LOGI(TAG, "USB functions: %s gamepad only, full speed",
                  s_pad_kind == PAD_XINPUT ? "XInput" : s_pad_kind == PAD_XID ? "original Xbox" : "HORI");
     } else {
-        ESP_LOGI(TAG, "USB functions: HID%s%s",
+        ESP_LOGI(TAG, "USB functions: HID%s%s%s",
                  s_pad != PAD_ADDED ? "" : s_pad_kind == PAD_XINPUT ? " + XInput gamepad" : " + HORI gamepad",
-                 with_msc ? " + mass storage" : "");
+                 with_msc ? " + mass storage" : "", with_cdc ? " + serial port" : "");
     }
 
     tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(tinyusb_on_event);
-    tusb_cfg.descriptor.device = NULL;
+    if (with_cdc) {
+        s_kvm_device_desc.bDeviceClass = TUSB_CLASS_MISC;
+        s_kvm_device_desc.bDeviceSubClass = MISC_SUBCLASS_COMMON;
+        s_kvm_device_desc.bDeviceProtocol = MISC_PROTOCOL_IAD;
+        s_kvm_device_desc.idProduct = KVM_USB_PID_CDC;
+    }
+    tusb_cfg.descriptor.device = &s_kvm_device_desc;
     static tusb_desc_device_t xinput_dev;
     if (s_pad != PAD_OFF && s_pad_kind == PAD_HORI) {
         tusb_cfg.descriptor.device = &k_pad_device_desc;
@@ -1726,6 +1859,17 @@ esp_err_t usb_hid_init(void)
     kvm_cap_report(KVM_CAP_HID, usb_err == ESP_OK, "USB device stack failed to start (%s)",
                    esp_err_to_name(usb_err));
     ESP_RETURN_ON_ERROR(usb_err, TAG, "tinyusb_driver_install");
+    if (with_cdc) {
+        const tinyusb_config_cdcacm_t acm = {
+            .cdc_port = TINYUSB_CDC_ACM_0,
+            .callback_rx = cdc_rx_cb,
+            .callback_line_state_changed = cdc_line_cb,
+        };
+        if (tinyusb_cdcacm_init(&acm) != ESP_OK) {
+            ESP_LOGE(TAG, "serial port: CDC init failed");
+            s_cdc_present = false;
+        }
+    }
 
     /*
      * Come back as a NEW device, not the one the target thinks it still has.

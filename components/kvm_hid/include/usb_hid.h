@@ -19,6 +19,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -163,6 +164,17 @@ void usb_hid_release_all(void);
 
 /** Is a gamepad part of the USB device (the usb_pad setting, from boot)? */
 bool usb_hid_pad_present(void);
+
+/*
+ * The serial port on the target's USB cable (usb_serial), present when it was
+ * on at boot, for the serial console or the agent, and no gamepad took its place. Bytes from the target go to the
+ * callback, from TinyUSB's task. A write returns how much went into the port.
+ */
+bool usb_hid_serial_present(void);
+void usb_hid_serial_set_rx(void (*cb)(const uint8_t *data, size_t len));
+/** DTR from the target: true while a program there has the port open. */
+void usb_hid_serial_set_line_state(void (*cb)(bool dtr));
+size_t usb_hid_serial_write(const void *data, size_t len);
 
 /** Which one: "switch" (HORI pad), "xinput" (Xbox 360 pad), "" for none. */
 const char *usb_hid_pad_kind(void);

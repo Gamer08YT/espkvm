@@ -17,6 +17,7 @@
 
 #include "kvm_caps.h"
 #include "kvm_settings.h"
+#include "usb_hid.h"
 
 static const char *TAG = "serial";
 
@@ -38,6 +39,8 @@ static SemaphoreHandle_t s_ring_mu;
  * the driver down, so the two never meet. */
 static SemaphoreHandle_t s_uart_mu;
 static volatile bool s_running;
+/* The console is the USB serial port, not the UART: fixed from boot. */
+static bool s_usb;
 static int s_tx = -1;
 static int s_rx = -1;
 static uint32_t s_baud = 115200;
@@ -67,7 +70,7 @@ static void reader_task(void *arg)
     (void)arg;
     uint8_t buf[256];
     for (;;) {
-        if (!s_running) {
+        if (!s_running || s_usb) {
             (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
             continue;
         }
@@ -124,6 +127,19 @@ void kvm_serial_apply(void)
     }
     uart_close();
 
+    /* The USB port needs no wires and no setting here: it is on or off from
+     * boot, with usb_serial. */
+    if (usb_hid_serial_present() && kvm_setting_int("usb_serial") == 1) {
+        if (!s_usb) {
+            s_usb = true;
+            usb_hid_serial_set_rx(ring_append);
+            ESP_LOGI(TAG, "serial console on the USB serial port");
+        }
+        s_running = true;
+        kvm_cap_report(KVM_CAP_SERIAL, true, NULL);
+        return;
+    }
+
     const bool enabled = kvm_setting_bool("ser_enable");
     s_tx = (int)kvm_setting_int("ser_tx");
     s_rx = (int)kvm_setting_int("ser_rx");
@@ -174,6 +190,7 @@ void kvm_serial_status(kvm_serial_status_t *out)
         return;
     }
     out->running = s_running;
+    out->usb = s_usb;
     out->tx_gpio = s_tx;
     out->rx_gpio = s_rx;
     out->baud = s_baud;
@@ -185,6 +202,11 @@ esp_err_t kvm_serial_write(const void *data, size_t len)
 {
     if (!s_running || !s_uart_mu) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (s_usb) {
+        const size_t n = usb_hid_serial_write(data, len);
+        s_tx_bytes += n;
+        return n == len ? ESP_OK : ESP_ERR_TIMEOUT;
     }
     if (xSemaphoreTake(s_uart_mu, pdMS_TO_TICKS(500)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;

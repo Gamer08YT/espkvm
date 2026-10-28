@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define USB_STRING_DESCRIPTOR_ARRAY_SIZE            8 // Max 8 string descriptors for a device. LANGID, Manufacturer, Product, Serial number + 4 user defined
+#define USB_STRING_DESCRIPTOR_ARRAY_SIZE            9 // ESP-KVM fork: 9, not 8 - LANGID, Manufacturer, Product, Serial number + 5 interface names
 
 /**
  * @brief Check the TinyUSB configuration

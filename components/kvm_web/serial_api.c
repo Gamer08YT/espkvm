@@ -201,6 +201,7 @@ static esp_err_t serial_get(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "enabled", kvm_setting_bool("ser_enable"));
     cJSON_AddBoolToObject(root, "running", st.running);
+    cJSON_AddBoolToObject(root, "usb", st.usb);
     cJSON_AddNumberToObject(root, "tx", st.tx_gpio);
     cJSON_AddNumberToObject(root, "rx", st.rx_gpio);
     cJSON_AddNumberToObject(root, "baud", st.baud);

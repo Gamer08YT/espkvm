@@ -11,6 +11,7 @@ idf_component_register(
         "profiles_api.c"
         "regions_api.c"
         "serial_api.c"
+        "agent_api.c"
         "netlog_api.c"
         "audio_api.c"
         "url_fetch.c"
@@ -46,6 +47,7 @@ idf_component_register(
         kvm_notify
         kvm_cec
         kvm_serial
+        kvm_agent
         kvm_audio
         kvm_netlog
         kvm_webrtc

@@ -7,6 +7,21 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-10-28
+
+### Added
+- A serial port over the USB cable. With "Serial port over USB" set to
+  "console", the target gets a serial port next to the keyboard and mouse,
+  and the serial console uses it, with no wires to the target. Linux sees /dev/ttyACM0,
+  Windows a COM port, macOS /dev/cu.usbmodem*. All three have the driver
+  built in. It is off by default and does not work together with a gamepad.
+- Set to "agent", the same port talks to espkvm-agent, a small program for the target
+  (Linux, Windows, macOS). A new Agent window in the console shows the
+  machine's name, OS and addresses, moves text to and from its clipboard and
+  shuts it down cleanly. Reading the clipboard and power are switched on at
+  the machine, not on the device. The clipboard is never read while the
+  machine's screen is locked.
+
 ### Changed
 - In MJPEG the encoder makes a frame only when a viewer can take it soon,
   instead of 50 a second for viewers that take 10. The spare work slowed the

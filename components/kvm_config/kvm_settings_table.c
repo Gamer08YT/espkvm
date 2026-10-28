@@ -83,6 +83,8 @@ static const char *const s_targetos_choices[] = {"auto", "windows", "macos", "li
 /* Must match k_bauds in kvm_serial.c. */
 static const char *const s_baud_choices[] = {"9600",   "19200",  "38400",  "57600",
                                              "115200", "230400", "460800", "921600"};
+/* Must match USB_SERIAL_AGENT in kvm_agent.c and the 1 in kvm_serial.c. */
+static const char *const s_usb_serial_choices[] = {"off", "console", "agent"};
 static const char *const s_pad_choices[] = {"off", "switch", "switch_alone", "xinput",
                                             "xinput_alone", "xbox"};
 /* What the button on the box does. Order must match k_actions[] in
@@ -760,6 +762,19 @@ static const kvm_setting_t s_settings[] = {
                 "(a Raspberry Pi, a router's header) goes straight in; a real RS-232 port "
                 "(9-pin, +-12 V) needs a MAX3232 module in between, or it damages the pin.",
         .def = 0, .requires_cap = -1,
+    },
+    {
+        .key = "usb_serial", .section = "power", .group = "Serial console", .type = KVM_VT_ENUM,
+        .title = "Serial port over USB",
+        .help = "A serial port on the USB cable the target already has, so no wires. Linux "
+                "sees it as /dev/ttyACM0, Windows as a COM port, macOS as /dev/cu.usbmodem*. "
+                "\"console\": the serial console uses it instead of the pins below; on Linux "
+                "run a login on it with \"systemctl enable --now serial-getty@ttyACM0\". "
+                "\"agent\": it is for espkvm-agent, a small program on the target that shows "
+                "what the machine is and shares its clipboard. Not together with a gamepad. "
+                "Takes effect after a restart.",
+        .min = 0, .max = ENUM_MAX(s_usb_serial_choices), .def = 0, .choices = s_usb_serial_choices,
+        .requires_cap = KVM_CAP_HID, .flags = KVM_SF_REBOOT,
     },
     {
         .key = "ser_tx", .section = "power", .group = "Serial console", .type = KVM_VT_INT,

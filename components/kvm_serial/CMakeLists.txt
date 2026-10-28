@@ -5,4 +5,5 @@ idf_component_register(
         esp_driver_uart
         esp_driver_gpio
         kvm_config
+        kvm_hid
 )

@@ -29,6 +29,7 @@
 #include "http_server.h"
 #include "kvm_atx.h"
 #include "kvm_serial.h"
+#include "kvm_agent.h"
 #include "kvm_audio.h"
 #include "kvm_netlog.h"
 #include "kvm_auth.h"
@@ -785,6 +786,10 @@ void app_main(void)
         ESP_LOGE(TAG, "usb_hid_init: %s (continuing without HID)", esp_err_to_name(hid_err));
     } else {
         usb_hid_jiggler_start();
+    }
+    /* espkvm-agent on the target, when the USB serial port is set to it. */
+    if (hid_err == ESP_OK && kvm_agent_init() != ESP_OK) {
+        ESP_LOGW(TAG, "agent: no memory for its buffers");
     }
     /* Runbooks send keys, so they need the HID stack; the parser is there either way. */
     runbook_init();

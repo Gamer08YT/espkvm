@@ -78,6 +78,7 @@
 #include "kvm_thermal.h"
 #include "kvm_tls.h"
 #include "kvm_acme.h"
+#include "kvm_agent.h"
 #include "kvm_proto.h"
 #include "usb_hid.h"
 #include "video_frame.h"
@@ -918,6 +919,9 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
     char install_id[KVM_INSTALL_ID_LEN + 1];
     kvm_install_id(install_id);
 
+    kvm_agent_status_t agent;
+    kvm_agent_status(&agent);
+
     char body[3072];
     int n = snprintf(body, sizeof(body),
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
@@ -937,6 +941,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "\"ts\":{\"enabled\":%s,\"up\":%s,\"address\":\"%s\",\"peers\":%d,"
                      "\"keyExpiry\":%lld,\"keyExpired\":%s},"
                      "\"jiggler\":{\"everyS\":%d,\"nudges\":%u},\"usbPad\":\"%s\","
+                     "\"agent\":{\"port\":%s,\"connected\":%s},"
                      "\"coproc\":%s,\"rtc\":%s,\"rtcChip\":\"%s\",\"boardTempC\":%s,"
                      "\"crashDumpBytes\":%u,\"installId\":\"%s\"}",
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
@@ -962,6 +967,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      ts.peers, (long long)ts.key_expiry, ts.key_expired ? "true" : "false",
                      (int)kvm_setting_int("jiggle_s"),
                      (unsigned)usb_hid_jiggler_nudges(), usb_hid_pad_kind(),
+                     agent.port ? "true" : "false", agent.connected ? "true" : "false",
                      coproc_json,
                      kvm_rtc_present() ? "true" : "false", kvm_rtc_name(), board_temp, dump_bytes,
                      install_id);
@@ -5071,7 +5077,7 @@ httpd_handle_t http_server_start(void)
      * The check below now logs a failed registration rather than swallowing it, so
      * the next person gets a line instead of a mystery - but keep headroom anyway.
      */
-    cfg.max_uri_handlers = 128;
+    cfg.max_uri_handlers = 136;
 
     if (kvm_auth_init() != ESP_OK) {
         /* Without a working password store the only safe answer is not to
@@ -5312,6 +5318,11 @@ httpd_handle_t http_server_start(void)
     const httpd_uri_t *serial_uris = serial_api_routes(&n_serial);
     for (size_t i = 0; i < n_serial; i++) {
         register_route(h, &serial_uris[i]);
+    }
+    size_t n_agent = 0;
+    const httpd_uri_t *agent_uris = agent_api_routes(&n_agent);
+    for (size_t i = 0; i < n_agent; i++) {
+        register_route(h, &agent_uris[i]);
     }
     if (audio_api_init() != ESP_OK) {
         ESP_LOGW(TAG, "audio socket: no memory for its pump");

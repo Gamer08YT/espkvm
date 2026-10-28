@@ -10,7 +10,9 @@
  * What the target sends is kept in a ring in PSRAM, counted in bytes from the
  * start, so a reader can ask for everything after the position it last saw and
  * a console that opens late still gets the boot messages. Settings: ser_enable,
- * ser_tx, ser_rx, ser_baud. Format is fixed at 8N1.
+ * ser_tx, ser_rx, ser_baud. Format is fixed at 8N1. With usb_serial on the
+ * console is a serial port on the target's USB cable instead, and the pins are
+ * not used.
  */
 #pragma once
 
@@ -28,7 +30,8 @@ extern "C" {
 #define KVM_SERIAL_RING_BYTES (64 * 1024)
 
 typedef struct {
-    bool running;    /**< the UART is up on valid pins */
+    bool running;    /**< the UART is up on valid pins, or the USB port is there */
+    bool usb;        /**< the console is the USB serial port (usb_serial), not the UART */
     int tx_gpio;     /**< -1 when not set */
     int rx_gpio;
     uint32_t baud;

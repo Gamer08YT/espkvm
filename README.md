@@ -84,6 +84,7 @@ Useful for what it does today, and honest about the rest.
 | Device profiles: pointer, gamepad and video settings for each target | new, the device picks one from HDMI-CEC or the USB guess |
 | Screen areas: react when a part of the screen changes, stops changing, matches a saved picture or turns a colour | new |
 | The target's serial console, and its log over the network | works |
+| An agent on the target: its name and addresses, the clipboard both ways, a clean shutdown | new; needs [espkvm-agent](https://github.com/espkvm/agent) on the target |
 | HTTPS, your own certificate, Let's Encrypt over Tailscale | works |
 | Login, two-factor sign-in, reset by a button | works |
 | Wi-Fi, a setup hotspot, Ethernet with Wi-Fi as the backup | works; on boards with a Wi-Fi chip |
