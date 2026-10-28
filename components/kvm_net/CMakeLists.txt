@@ -71,9 +71,11 @@ idf_component_register(
 # ethernet.c resets the EMAC on the way into every restart (esp-idf #19085).
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart_noos")
 
-# wifi.c moves esp-hosted's SDIO packet buffers out of internal RAM.
+# wifi.c moves esp-hosted's SDIO packet buffers out of internal RAM, and makes
+# its long waits for the co-processor sleep instead of spin.
 if(CONFIG_KVM_WIFI)
-    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=eh_host_port_dma_alloc")
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=eh_host_port_dma_alloc"
+                                                     "-Wl,--wrap=eh_host_port_task_delay_us")
 endif()
 
 if(coproc_embed)

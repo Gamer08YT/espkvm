@@ -323,6 +323,7 @@ void capture_loop_run(capture_ctx_t *c)
     int64_t hdmi_recover_cooldown_until_us = 0;
     int64_t switch_retry_us = 0; /* after a refused codec switch */
     int64_t next_encode_us = 0; /* frame rate limit: when the next encode is due */
+    int64_t last_mjpeg_us = 0;  /* when an MJPEG encode was last let through */
 #if CAPTURE_EARLY_ENCODE
     /* When the frame last encoded early started arriving, so it is not taken
      * twice; and whether the turn after an encode may skip waiting for a frame. */
@@ -508,6 +509,26 @@ void capture_loop_run(capture_ctx_t *c)
         if (fps_max > 0 &&
             !fps_gate_take(&next_encode_us, esp_timer_get_time(), 1000000 / fps_max)) {
             continue;
+        }
+        /*
+         * MJPEG only: encode when a viewer can take the frame soon. The encoder
+         * made 50 fps while the senders, held back by TLS, took 10, and the
+         * spare encodes cost the PSRAM bandwidth and CPU the sends need: capped
+         * at 15 fps a viewer got 12% more. H.264 keeps its steady pace: its
+         * early encode is what keeps the delay down, and a recording needs
+         * every frame. A frame still goes out every 250 ms whatever the answer.
+         */
+        if (codec == capture_codec_mjpeg()) {
+            kvm_video_status_t st;
+            capture_status_get(&st);
+            const int64_t now = esp_timer_get_time();
+            const int64_t lead_us = (int64_t)st.encode_us + (st.input_hz ? 1000000 / st.input_hz : 20000);
+            if (now - last_mjpeg_us < 250000 && !video_frame_wanted(lead_us)) {
+                capture_screentext_idle(c);
+                regions_idle(c);
+                continue;
+            }
+            last_mjpeg_us = now;
         }
         int64_t landed_us = 0;
         bool early = false;

@@ -13,7 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -2794,7 +2793,7 @@ static httpd_handle_t s_redirect_httpd;
  *
  * esp_http_server frees a session's TLS context in httpd_sess_clear_ctx(),
  * immediately after it calls the close callback below. Sends do not all come
- * from the server's own task - the video pump has one, and the keyboard-LED
+ * from the server's own task - the video senders have one, and the keyboard-LED
  * callback pushes status from the USB task - so a send could be inside
  * mbedtls_ssl_write() on a context that had just been freed. It was: a build
  * with heap poisoning caught the jump through ssl->f_send read back as
@@ -2819,6 +2818,37 @@ static int s_tx_fds[TX_MAX_SOCKETS];
  * waiting sender that its session closed and the slot was reused meanwhile. */
 static SemaphoreHandle_t s_tx_slot_mu[TX_MAX_SOCKETS];
 static uint32_t s_tx_gen[TX_MAX_SOCKETS];
+/*
+ * The write lock is a binary semaphore with the recursion counted here, not a
+ * FreeRTOS mutex. A mutex lends its holder the priority of whoever waits on
+ * ANY mutex it holds, and takes the boost back only when the holder has
+ * released all of them. Inside a send, lwIP's core lock is waited on by the
+ * Wi-Fi link's priority-22 tasks; the sender got 22, kept it for the rest of
+ * a 100 KB frame because this lock was still held, and encrypted at 22 on a
+ * core for long enough that the idle task starved: a watchdog reset.
+ */
+static TaskHandle_t s_tx_slot_owner[TX_MAX_SOCKETS];
+static int s_tx_slot_depth[TX_MAX_SOCKETS];
+
+static void tx_slot_take(int slot)
+{
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    if (s_tx_slot_owner[slot] == me) { /* only the owner ever sees itself here */
+        s_tx_slot_depth[slot]++;
+        return;
+    }
+    (void)xSemaphoreTake(s_tx_slot_mu[slot], portMAX_DELAY);
+    s_tx_slot_owner[slot] = me;
+    s_tx_slot_depth[slot] = 1;
+}
+
+static void tx_slot_give(int slot)
+{
+    if (--s_tx_slot_depth[slot] == 0) {
+        s_tx_slot_owner[slot] = NULL;
+        xSemaphoreGive(s_tx_slot_mu[slot]);
+    }
+}
 
 /* Take the write lock of fd's session. Returns its slot, or -1 when the
  * session is not listed (closed, or never opened by us). */
@@ -2841,12 +2871,12 @@ static int tx_lock(int fd)
     if (slot < 0) {
         return -1;
     }
-    (void)xSemaphoreTakeRecursive(s_tx_slot_mu[slot], portMAX_DELAY);
+    tx_slot_take(slot);
     (void)xSemaphoreTakeRecursive(s_tx_mu, portMAX_DELAY);
     const bool same = s_tx_fds[slot] == fd && s_tx_gen[slot] == gen;
     xSemaphoreGiveRecursive(s_tx_mu);
     if (!same) {
-        xSemaphoreGiveRecursive(s_tx_slot_mu[slot]);
+        tx_slot_give(slot);
         return -1;
     }
     return slot;
@@ -2855,7 +2885,7 @@ static int tx_lock(int fd)
 static void tx_unlock(int slot)
 {
     if (slot >= 0) {
-        xSemaphoreGiveRecursive(s_tx_slot_mu[slot]);
+        tx_slot_give(slot);
     }
 }
 /* The control WebSockets, which is where a notice for everybody goes. */
@@ -2889,6 +2919,32 @@ typedef struct {
     esp_tls_t *tls;
 } https_transport_head_t;
 
+/* Waits until the socket can take more, or the deadline passes. The sockets
+ * can be non-blocking (the /stream one is), and retrying a full one at once
+ * kept the task off the CPU's idle task for seconds: a watchdog reset with
+ * a slow viewer. */
+static void wait_sendable(int sockfd, bool for_read, int64_t deadline)
+{
+    const int64_t left = deadline - esp_timer_get_time();
+    if (left <= 0) {
+        return;
+    }
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sockfd, &fds);
+    struct timeval tv = {.tv_sec = left / 1000000, .tv_usec = left % 1000000};
+    (void)select(sockfd + 1, for_read ? &fds : NULL, for_read ? NULL : &fds, NULL, &tv);
+}
+
+/*
+ * One TLS write encrypts at a time, device-wide. The cipher runs in software
+ * and a write encrypts as much as the socket takes. With one video sender a
+ * viewer, three viewers plus a handshake kept both cores busy, and the idle
+ * task starved: a watchdog reset. A write gives its turn back while it waits
+ * for its socket, so a slow viewer does not hold up the others.
+ */
+static SemaphoreHandle_t s_tls_write_turn;
+
 static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_t buf_len, int flags)
 {
     (void)flags;
@@ -2904,11 +2960,19 @@ static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_
     const int64_t deadline = esp_timer_get_time() + 5000000; /* 100 KB at 20 KB/s */
     size_t done = 0;
     while (done < buf_len && esp_timer_get_time() < deadline) {
+        if (s_tls_write_turn) {
+            (void)xSemaphoreTake(s_tls_write_turn, portMAX_DELAY);
+        }
         const ssize_t ret = esp_tls_conn_write(ctx->tls, buf + done, buf_len - done);
+        if (s_tls_write_turn) {
+            xSemaphoreGive(s_tls_write_turn);
+        }
         if (ret > 0) {
             done += (size_t)ret;
         } else if (ret != 0 && ret != ESP_TLS_ERR_SSL_WANT_WRITE && ret != ESP_TLS_ERR_SSL_WANT_READ) {
             break;
+        } else {
+            wait_sendable(sockfd, ret == ESP_TLS_ERR_SSL_WANT_READ, deadline);
         }
     }
     tx_unlock(slot);
@@ -2929,6 +2993,8 @@ static int locked_http_send(httpd_handle_t hd, int sockfd, const char *buf, size
             done += (size_t)ret;
         } else if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             break;
+        } else {
+            wait_sendable(sockfd, false, deadline);
         }
     }
     tx_unlock(slot);
@@ -3783,11 +3849,11 @@ static void stream_worker_task(void *arg)
 
 #define VIDEO_MAX_CLIENTS 4
 
-/* Frames a client may be unwritable for before it is dropped. A viewer whose TCP
- * send buffer stays full is not reading (a stalled decoder, a backgrounded tab, a
- * dead link); ~3 s at 30 fps is long enough to ride out normal flow control but
- * short enough that a truly gone viewer stops holding up the pump. */
-#define VIDEO_STALL_DROP_FRAMES 90
+/* How long a client's socket may stay full before it is dropped. A viewer whose
+ * TCP send buffer stays full is not reading (a stalled decoder, a backgrounded
+ * tab, a dead link); 3 s rides out normal flow control, and a viewer truly gone
+ * stops keeping the encoder running. */
+#define VIDEO_STALL_DROP_MS 3000
 
 
 static int s_video_fds[VIDEO_MAX_CLIENTS];
@@ -3798,10 +3864,6 @@ static int s_video_fds[VIDEO_MAX_CLIENTS];
  * comes out of the encoder.
  */
 static bool s_video_need_key[VIDEO_MAX_CLIENTS];
-/* Consecutive frames a client has been unable to accept (its send buffer full).
- * A half-open socket left by an unclean disconnect, or a viewer that stopped
- * reading, sits here until it is dropped - so it never gets a spinning TLS send. */
-static int s_video_stall[VIDEO_MAX_CLIENTS];
 /* Frames sent and not yet acked, for a viewer that acks (WS_C2D_VIDEO_ACK).
  * Without this a viewer on a slow link had a whole TCP buffer of old frames
  * queued in front of the newest: hundreds of ms behind. */
@@ -3829,9 +3891,17 @@ static int64_t s_video_sent_at[VIDEO_MAX_CLIENTS];
 static bool s_text_mode[VIDEO_MAX_CLIENTS];
 /* A subscriber that has no reading yet cannot be sent the rows that changed. */
 static bool s_text_need_full[VIDEO_MAX_CLIENTS];
+/* Bumped each time a slot gets a picture viewer, so that viewer's sender task
+ * can tell its slot from a later viewer's on the same fd number. */
+static uint32_t s_video_gen[VIDEO_MAX_CLIENTS];
+/* When the frame on its way to this viewer started (0: not sending), and how
+ * long a send to it usually takes: when it will want the next frame. */
+static int64_t s_video_send_t0[VIDEO_MAX_CLIENTS];
+static int64_t s_video_send_avg_us[VIDEO_MAX_CLIENTS];
 /* s_video_client_count and s_text_client_count are defined near
    api_video_status_get (declared once, above). */
 static SemaphoreHandle_t s_video_mu;
+static void video_sender_start(int index, int fd, uint32_t gen);
 
 /* Whether this socket is already subscribed, and to the picture rather than to
  * the text reading. A second message from such a client is a resync request. */
@@ -3868,42 +3938,43 @@ static void video_add_client(int fd, bool text)
             return;
         }
     }
+    int sender = -1;
+    uint32_t gen = 0;
     for (int i = 0; i < VIDEO_MAX_CLIENTS; i++) {
         if (s_video_fds[i] < 0) {
             s_video_fds[i] = fd;
             s_video_need_key[i] = true;
-            s_video_stall[i] = 0;
             s_video_acks[i] = false;
             s_video_unacked[i] = 0;
             s_video_ack_lost[i] = false;
+            s_video_send_t0[i] = 0;
+            s_video_send_avg_us[i] = 0;
             s_text_mode[i] = text;
             s_text_need_full[i] = text;
-            /* Bound sends to this viewer. esp-tls left the socket non-blocking, so a
-             * full send buffer makes esp_tls_conn_write return 0 (WANT_WRITE) and
-             * httpd_send_all spin on it with no yield - pegging the pump task and
-             * tripping the watchdog. Switch to blocking with a short send timeout, so
-             * a stuck send blocks-with-timeout (yielding) instead of spinning; the
-             * pump's writability check still skips and eventually drops a dead one. */
-            int fl = fcntl(fd, F_GETFL, 0);
-            if (fl >= 0) {
-                (void)fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
-            }
-            const struct timeval sndto = {.tv_sec = 0, .tv_usec = 400000};
-            (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
+            /* The socket stays non-blocking, as esp-tls left it: locked_ssl_send
+             * waits for room without holding the TLS write turn, and the
+             * sender's wait for room drops a viewer that stopped reading. */
             if (text) {
                 /* Deliberately not a viewer: the encoder stays idle, which is
                    the whole saving text mode exists for. What the reader does
                    need is the capture side reading the screen promptly. */
                 s_text_client_count++;
                 screentext_stream_enter();
-            } else if (s_video_client_count++ == 0) {
-                /* First viewer: the encoder is idle until someone is reading. */
-                video_frame_viewer_enter();
+            } else {
+                if (s_video_client_count++ == 0) {
+                    /* First viewer: the encoder is idle until someone is reading. */
+                    video_frame_viewer_enter();
+                }
+                sender = i;
+                gen = ++s_video_gen[i];
             }
             break;
         }
     }
     xSemaphoreGive(s_video_mu);
+    if (sender >= 0) {
+        video_sender_start(sender, fd, gen);
+    }
     if (!text) {
         /* Also when this is not the first viewer: the newcomer needs a frame it
          * can decode from, whoever else is already watching. */
@@ -3916,7 +3987,6 @@ static void video_drop_client_locked(int index)
     const bool was_text = s_text_mode[index];
     s_video_fds[index] = -1;
     s_video_need_key[index] = false;
-    s_video_stall[index] = 0;
     s_video_acks[index] = false;
     s_video_unacked[index] = 0;
     s_video_ack_lost[index] = false;
@@ -4207,37 +4277,123 @@ static void video_request_repair_idr(void)
     video_frame_request_repair_keyframe();
 }
 
-static void video_pump_task(void *arg)
+/* Text-mode readings go out from here; pictures from each viewer's sender. */
+static void text_pump_task(void *arg)
 {
     httpd_handle_t server = (httpd_handle_t)arg;
+    for (;;) {
+        /* Cheap unless there is a new reading and somebody to send it to: a
+           sequence compared against the last one sent. A reader of characters
+           is waited on more closely than an empty device: this check is what
+           turns a settled screen into an update. */
+        text_push(server);
+        vTaskDelay(pdMS_TO_TICKS(s_text_client_count ? 20 : 100));
+    }
+}
+
+typedef struct {
+    httpd_handle_t server;
+    int index;
+    int fd;
+    uint32_t gen;
+} video_sender_t;
+
+/* Under s_video_mu: the slot still holds the viewer this sender was made for. */
+static bool video_sender_owns_locked(const video_sender_t *v)
+{
+    return s_video_fds[v->index] == v->fd && s_video_gen[v->index] == v->gen;
+}
+
+static bool video_sender_owns(const video_sender_t *v)
+{
+    if (xSemaphoreTake(s_video_mu, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    const bool owns = video_sender_owns_locked(v);
+    xSemaphoreGive(s_video_mu);
+    return owns;
+}
+
+/*
+ * A viewer that does not ack is paced by its socket: wait until the socket can
+ * take a frame, then send the newest. Sending into a full buffer would queue a
+ * frame behind older ones. lwIP calls a socket writable only with half its
+ * send buffer free. A viewer that acks skips this: its acks are the flow
+ * control. Returns false when the viewer is gone or was dropped for not reading.
+ */
+static bool video_sender_wait_room(const video_sender_t *v)
+{
+    if (xSemaphoreTake(s_video_mu, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    if (!video_sender_owns_locked(v)) {
+        xSemaphoreGive(s_video_mu);
+        return false;
+    }
+    const bool paced = !s_video_acks[v->index] || s_video_ack_lost[v->index];
+    xSemaphoreGive(s_video_mu);
+    if (!paced) {
+        return true;
+    }
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(v->fd, &wfds);
+    struct timeval tv = {0, 0};
+    if (select(v->fd + 1, NULL, &wfds, NULL, &tv) > 0) {
+        return true;
+    }
+    /* Each frame that comes out while it waits is one its link could not
+     * carry: what turns the quality down (capture_link_pct). */
+    const uint32_t seq0 = video_frame_seq();
+    FD_ZERO(&wfds);
+    FD_SET(v->fd, &wfds);
+    tv = (struct timeval){.tv_sec = VIDEO_STALL_DROP_MS / 1000, .tv_usec = (VIDEO_STALL_DROP_MS % 1000) * 1000};
+    const int r = select(v->fd + 1, NULL, &wfds, NULL, &tv);
+    for (uint32_t n = video_frame_seq() - seq0; n > 0; n--) {
+        capture_link_miss();
+    }
+    if (r > 0) {
+        return true;
+    }
+    if (xSemaphoreTake(s_video_mu, portMAX_DELAY) == pdTRUE) {
+        if (video_sender_owns_locked(v)) {
+            video_drop_client_locked(v->index);
+        }
+        xSemaphoreGive(s_video_mu);
+    }
+    return false;
+}
+
+/*
+ * One per picture viewer, for as long as it watches. The frames used to go out
+ * from a single task, one viewer after another, so a viewer on slow Wi-Fi held
+ * every other viewer to its pace: a console on Ethernet fell from 17 to 5 fps.
+ * Now a slow send only delays its own viewer, which then takes the newest
+ * frame when it is done.
+ */
+static void video_sender_task(void *arg)
+{
+    video_sender_t v = *(video_sender_t *)arg;
+    free(arg);
+    const int i = v.index;
     uint8_t *packet = NULL;
     size_t packet_cap = 0;
     uint32_t last_seq = 0;
 
     for (;;) {
-        /* Cheap unless there is a new reading and somebody to send it to: a
-           sequence compared against the last one sent. */
-        text_push(server);
-
-        if (s_video_client_count == 0) {
-            /* A reader of characters is waited on more closely than an empty
-               device: the check above is what turns a settled screen into an
-               update, and 20 ms of it is nothing next to the encode this mode
-               is not doing. */
-            vTaskDelay(pdMS_TO_TICKS(s_text_client_count ? 20 : 100));
-            last_seq = video_frame_seq();
-            continue;
+        if (!video_sender_wait_room(&v)) {
+            break;
         }
         /*
-         * Block until the store publishes something newer - do NOT poll. The old
-         * 5 ms poll here was the watchdog: at CONFIG_FREERTOS_HZ=100 a tick is
-         * 10 ms, so pdMS_TO_TICKS(5) truncates to 0 and vTaskDelay(0) never lets
-         * a lower-priority task run. With a viewer connected this loop then
-         * busy-span between frames, starving IDLE0 (task_wdt, "kvm_video" on
-         * CPU0) and the prio-4 capture monitor - glitching the video it was
-         * pumping. The semaphore wait sleeps properly at any tick rate.
+         * Block until the store publishes something newer - do NOT poll. A
+         * 5 ms poll is 0 ticks at CONFIG_FREERTOS_HZ=100, and the loop then
+         * busy-spins between frames, starving the idle task (task_wdt) and the
+         * capture monitor. The semaphore wait sleeps properly at any tick rate.
          */
         if (!video_frame_wait_new(last_seq, 500)) {
+            if (!video_sender_owns(&v)) {
+                break;
+            }
             continue;
         }
 
@@ -4245,24 +4401,17 @@ static void video_pump_task(void *arg)
         if (!video_frame_acquire(&f)) {
             /* The front slot is momentarily invalid - e.g. a codec/resolution
              * reinit (video_frame_install) set it aside and bumped the sequence.
-             * At least one full tick, not pdMS_TO_TICKS(5): that is 0 ticks at
-             * 100 Hz, i.e. no delay at all (see above). */
+             * At least one full tick: pdMS_TO_TICKS(5) is 0 ticks at 100 Hz. */
             vTaskDelay(1);
             last_seq = video_frame_seq();
             continue;
         }
         /*
          * The store hands out the newest frame, so falling behind a burst (a
-         * window opening is a run of large deltas) coalesces - a skipped H.264
-         * delta breaks the decoder's reference chain and the picture shatters
-         * until a keyframe. The gap says exactly when that happened: ask for an
-         * IDR now and the repair arrives within a frame or two instead of at the
-         * next scheduled keyframe.
+         * window opening is a run of large deltas) skips some. A skipped H.264
+         * delta breaks this viewer's reference chain until a keyframe.
          */
-        if (last_seq != 0 && (uint32_t)(f.seq - last_seq) > 1u &&
-            f.payload == VIDEO_PAYLOAD_H264) {
-            video_request_repair_idr();
-        }
+        const bool missed = last_seq != 0 && (uint32_t)(f.seq - last_seq) > 1u;
         last_seq = f.seq;
 
         if (packet_cap < VIDEO_HDR_LEN + f.len) {
@@ -4294,120 +4443,141 @@ static void video_pump_task(void *arg)
         const int64_t f_at_us = f.at_us, f_src_us = f.src_us;
         video_frame_release(&f);
 
-        httpd_ws_frame_t frame = {
-            .final = true,
-            .type = HTTPD_WS_TYPE_BINARY,
-            .payload = packet,
-            .len = packet_len,
-        };
-
-        /*
-         * Decide who to send to under the lock, then send outside it. A send
-         * to a viewer on a slow link blocks for as long as the socket takes,
-         * and holding the table across that stalls every session close for the
-         * same duration - which is how a departed viewer stayed counted and
-         * kept the encoder running.
-         */
-        int targets[VIDEO_MAX_CLIENTS];
-        int target_count = 0;
-        bool repair = false;
+        /* Decide under the lock, send outside it: a send to a slow link blocks
+         * for as long as the socket takes, and holding the table across that
+         * stalls every session close for the same duration. */
         if (xSemaphoreTake(s_video_mu, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        for (int i = 0; i < VIDEO_MAX_CLIENTS; i++) {
-            const int fd = s_video_fds[i];
-            if (fd < 0) {
-                continue;
+        if (!video_sender_owns_locked(&v)) {
+            xSemaphoreGive(s_video_mu);
+            break;
+        }
+        bool send = false;
+        bool repair = false;
+        if (missed && f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
+            s_video_need_key[i] = true;
+            repair = true;
+        }
+        const int window = f_payload == VIDEO_PAYLOAD_H264 ? VIDEO_ACK_WINDOW_H264 : VIDEO_ACK_WINDOW;
+        if (s_video_acks[i] && s_video_unacked[i] >= window &&
+            esp_timer_get_time() - s_video_sent_at[i] > 500000) {
+            s_video_unacked[i] = 0; /* an ack went missing: do not wait forever */
+            s_video_ack_lost[i] = true;
+        }
+        if (s_video_need_key[i] && !keyframe) {
+            /* still waiting for a decodable frame */
+        } else if (s_video_acks[i] && s_video_unacked[i] >= window) {
+            /* Still showing what it has: the newest frame goes next time,
+             * rather than this one waiting in a buffer. */
+            if (f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
+                s_video_need_key[i] = true;
+                repair = true;
             }
-            if (s_text_mode[i]) {
-                continue; /* reading the screen, not watching it */
-            }
-            if (s_video_need_key[i] && !keyframe) {
-                continue; /* still waiting for its first decodable frame */
-            }
-            const int window =
-                f_payload == VIDEO_PAYLOAD_H264 ? VIDEO_ACK_WINDOW_H264 : VIDEO_ACK_WINDOW;
-            if (s_video_acks[i] && s_video_unacked[i] >= window &&
-                esp_timer_get_time() - s_video_sent_at[i] > 500000) {
-                s_video_unacked[i] = 0; /* an ack went missing: do not wait forever */
-                s_video_ack_lost[i] = true;
-            }
-            if (s_video_acks[i] && s_video_unacked[i] >= window) {
-                /* Still showing what it has: the newest frame goes next time,
-                 * rather than this one waiting in a buffer. */
-                if (f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
-                    s_video_need_key[i] = true;
-                    repair = true;
-                }
-                continue;
-            }
-            /*
-             * Only send to a client that can take the frame now. A viewer whose TCP
-             * send buffer is full is not reading it - a stalled decoder, a
-             * backgrounded tab, or a half-open socket left by an unclean disconnect.
-             * Sending anyway spins the TLS write (esp_tls returns 0 on WANT_WRITE and
-             * httpd_send_all loops on that with no yield), pegging this task and
-             * tripping the watchdog. A non-blocking select skips such a client; once
-             * it has been stuck too long it is dropped so it stops holding up the
-             * pump (and lets the encoder idle if it was the last viewer).
-             */
-            /*
-             * A viewer that acks needs no such check: its acks are the flow
-             * control, and the window above bounds what is on the way. The
-             * socket check would get in its way - lwIP calls a socket writable
-             * only with half its send buffer free, which a keyframe on a link
-             * a little slower than a LAN does not leave by the next frame.
-             */
-            fd_set wfds;
-            FD_ZERO(&wfds);
-            FD_SET(fd, &wfds);
-            struct timeval tv0 = {0, 0};
-            if ((!s_video_acks[i] || s_video_ack_lost[i]) &&
-                (select(fd + 1, NULL, &wfds, NULL, &tv0) <= 0 || !FD_ISSET(fd, &wfds))) {
-                capture_link_miss();
-                if (++s_video_stall[i] >= VIDEO_STALL_DROP_FRAMES) {
-                    video_drop_client_locked(i);
-                } else if (f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
-                    /* This viewer misses a frame its decoder needs: hold its
-                       deltas until a keyframe, and ask for one. A slow Wi-Fi
-                       link hit this every few seconds. */
-                    s_video_need_key[i] = true;
-                    repair = true;
-                }
-                continue;
-            }
-            s_video_stall[i] = 0;
+        } else {
             s_video_ack_lost[i] = false;
             s_video_need_key[i] = false; /* decodable frame (a keyframe if it was waiting) */
             if (s_video_acks[i]) {
                 s_video_unacked[i]++;
                 s_video_sent_at[i] = esp_timer_get_time();
             }
-            targets[target_count++] = fd;
+            s_video_send_t0[i] = esp_timer_get_time();
+            send = true;
         }
         xSemaphoreGive(s_video_mu);
         if (repair) {
             video_request_repair_idr();
         }
-
-        for (int i = 0; i < target_count; i++) {
-            const int64_t send_t0 = esp_timer_get_time();
-            const esp_err_t send_r = ws_send_frame(server, targets[i], &frame);
-            const int64_t send_ms = (esp_timer_get_time() - send_t0) / 1000;
-            if (send_ms > 500) {
-                /* Diagnostic: a send this slow is the watchdog culprit. */
-                ESP_LOGW(TAG, "slow video send fd=%d len=%zu key=%d took %lldms", targets[i],
-                         packet_len, keyframe, (long long)send_ms);
-            }
-            if (send_r != ESP_OK) {
-                /* A viewer that has gone stops being counted, which is also
-                 * what lets the encoder go idle again. */
-                video_remove_client(targets[i]);
-            } else if (f_src_us > 0) {
-                const int64_t now = esp_timer_get_time();
-                capture_status_add_sent((uint32_t)(now - f_at_us), (uint32_t)(now - f_src_us));
-            }
+        if (!send) {
+            continue;
         }
+
+        httpd_ws_frame_t frame = {
+            .final = true,
+            .type = HTTPD_WS_TYPE_BINARY,
+            .payload = packet,
+            .len = packet_len,
+        };
+        const int64_t send_t0 = esp_timer_get_time();
+        const esp_err_t send_r = ws_send_frame(v.server, v.fd, &frame);
+        const int64_t send_ms = (esp_timer_get_time() - send_t0) / 1000;
+        if (send_ms > 500) {
+            ESP_LOGW(TAG, "slow video send fd=%d len=%zu key=%d took %lldms", v.fd, packet_len, keyframe,
+                     (long long)send_ms);
+        }
+        if (xSemaphoreTake(s_video_mu, portMAX_DELAY) == pdTRUE) {
+            if (video_sender_owns_locked(&v)) {
+                s_video_send_t0[i] = 0;
+                s_video_send_avg_us[i] += (send_ms * 1000 - s_video_send_avg_us[i]) / 4;
+            }
+            xSemaphoreGive(s_video_mu);
+        }
+        if (send_r != ESP_OK) {
+            /* A viewer that has gone stops being counted, which is also what
+             * lets the encoder go idle again. By slot, not fd: the fd number
+             * may already belong to a new session. */
+            if (xSemaphoreTake(s_video_mu, portMAX_DELAY) == pdTRUE) {
+                if (video_sender_owns_locked(&v)) {
+                    video_drop_client_locked(i);
+                }
+                xSemaphoreGive(s_video_mu);
+            }
+            break;
+        }
+        if (f_src_us > 0) {
+            const int64_t now = esp_timer_get_time();
+            capture_status_add_sent((uint32_t)(now - f_at_us), (uint32_t)(now - f_src_us));
+        }
+    }
+    free(packet);
+    vTaskDelete(NULL);
+}
+
+/*
+ * The encoder asks before an MJPEG frame (video_frame_wanted): is any viewer
+ * free, or done sending within @p lead_us? A frame encoded earlier would only
+ * wait, older, for a sender to come back. Never blocks the capture loop: a
+ * table that is busy answers yes.
+ */
+static bool video_demand(int64_t lead_us)
+{
+    if (!s_video_mu || xSemaphoreTake(s_video_mu, 0) != pdTRUE) {
+        return true;
+    }
+    const int64_t now = esp_timer_get_time();
+    bool want = true;
+    for (int i = 0; i < VIDEO_MAX_CLIENTS; i++) {
+        if (s_video_fds[i] < 0 || s_text_mode[i]) {
+            continue;
+        }
+        want = s_video_need_key[i] || s_video_send_t0[i] == 0 ||
+               s_video_send_t0[i] + s_video_send_avg_us[i] - now <= lead_us;
+        if (want) {
+            break;
+        }
+    }
+    xSemaphoreGive(s_video_mu);
+    return want;
+}
+
+static void video_sender_start(int index, int fd, uint32_t gen)
+{
+    video_sender_t *v = malloc(sizeof(*v));
+    if (v) {
+        *v = (video_sender_t){.server = s_httpd, .index = index, .fd = fd, .gen = gen};
+        /* The stack the single pump had: the TLS write is the deepest thing here. */
+        if (xTaskCreate(video_sender_task, "kvm_video", 4096, v, STREAM_WORKER_PRIO, NULL) == pdPASS) {
+            return;
+        }
+        free(v);
+    }
+    /* No task, no frames: do not leave it counted (the encoder would run for it). */
+    ESP_LOGW(TAG, "no memory for a video sender, fd=%d dropped", fd);
+    if (xSemaphoreTake(s_video_mu, portMAX_DELAY) == pdTRUE) {
+        if (s_video_fds[index] == fd && s_video_gen[index] == gen) {
+            video_drop_client_locked(index);
+        }
+        xSemaphoreGive(s_video_mu);
     }
 }
 
@@ -4837,10 +5007,19 @@ httpd_handle_t http_server_start(void)
         }
         bool slots = true;
         for (int i = 0; i < TX_MAX_SOCKETS; i++) {
-            s_tx_slot_mu[i] = xSemaphoreCreateRecursiveMutex();
+            s_tx_slot_mu[i] = xSemaphoreCreateBinary();
+            if (s_tx_slot_mu[i]) {
+                xSemaphoreGive(s_tx_slot_mu[i]); /* a binary semaphore starts taken */
+            }
             slots = slots && s_tx_slot_mu[i];
         }
         s_tx_mu = slots ? xSemaphoreCreateRecursiveMutex() : NULL;
+        /* Binary, not a mutex: a mutex would pass on priority boosts from
+         * lwIP's core lock taken inside the write (see s_tx_slot_owner). */
+        s_tls_write_turn = xSemaphoreCreateBinary();
+        if (s_tls_write_turn) {
+            xSemaphoreGive(s_tls_write_turn);
+        }
         if (!s_tx_mu) {
             /* Without it every send would be racing the session teardown. */
             ESP_LOGE(TAG, "tx mutex");
@@ -5001,7 +5180,8 @@ httpd_handle_t http_server_start(void)
     s_xmit_mu = xSemaphoreCreateMutex();
     s_video_mu = xSemaphoreCreateMutex();
     if (s_video_mu) {
-        xTaskCreate(video_pump_task, "kvm_video", 4096, h, STREAM_WORKER_PRIO, NULL);
+        xTaskCreate(text_pump_task, "kvm_text", 4096, h, STREAM_WORKER_PRIO, NULL);
+        video_frame_set_demand_cb(video_demand);
     }
     usb_hid_set_led_callback(on_hid_leds, NULL);
 

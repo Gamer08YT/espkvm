@@ -387,6 +387,19 @@ int video_frame_viewer_count(void)
     return n;
 }
 
+static video_frame_demand_cb_t s_demand_cb;
+
+void video_frame_set_demand_cb(video_frame_demand_cb_t cb)
+{
+    s_demand_cb = cb;
+}
+
+bool video_frame_wanted(int64_t lead_us)
+{
+    const video_frame_demand_cb_t cb = s_demand_cb;
+    return !cb || video_frame_viewer_count() != 1 || cb(lead_us);
+}
+
 void video_frame_request_keyframe(void)
 {
     s.keyframe_wanted = true;

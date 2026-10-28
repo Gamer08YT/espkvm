@@ -116,6 +116,16 @@ void video_frame_viewer_leave(void);
 int video_frame_viewer_count(void);
 
 /*
+ * Whether a viewer can take a new frame soon. The web server's video senders
+ * answer it: @p lead_us is how long an encode started now would take. The
+ * answer counts only while they are the one viewer registered; with anybody
+ * else watching (a recording, an MJPEG stream) every frame is wanted.
+ */
+typedef bool (*video_frame_demand_cb_t)(int64_t lead_us);
+void video_frame_set_demand_cb(video_frame_demand_cb_t cb);
+bool video_frame_wanted(int64_t lead_us);
+
+/*
  * Uploads. While one runs the stream is encoded at no more than
  * VIDEO_UPLOAD_FPS. The encoder and the Ethernet MAC share the chip's bus: at
  * full frame rate the MAC drops frames and a 3.5 MB/s upload falls to 0.3.

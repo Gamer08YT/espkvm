@@ -7,6 +7,23 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Changed
+- In MJPEG the encoder makes a frame only when a viewer can take it soon,
+  instead of 50 a second for viewers that take 10. The spare work slowed the
+  sending: a viewer now gets about 9% more, the frames are a little fresher,
+  and the chip runs cooler.
+
+### Fixed
+- A viewer of the MJPEG stream on a slow link (a VPN, weak Wi-Fi) could
+  restart the device: the send retried a full socket without a pause and the
+  watchdog fired. It now waits for the socket.
+- One viewer on a slow link no longer holds up the others. Frames went out to
+  viewers one after another, waiting for each. Each viewer now gets its own
+  sender.
+- Several viewers at once, or a busy Wi-Fi link, could restart the device
+  with a watchdog reset. The encryption is now done one write at a time,
+  and the Wi-Fi driver's waits sleep instead of spinning.
+
 ## [0.73.0] - 2026-10-26
 
 ### Added

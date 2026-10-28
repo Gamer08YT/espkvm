@@ -27,6 +27,7 @@ __attribute__((unused)) static const char *TAG = "wifi";
 #include "esp_heap_caps.h"
 #include "esp_hosted.h"
 #include "esp_mac.h"
+#include "esp_rom_sys.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -579,6 +580,23 @@ void *__wrap_eh_host_port_dma_alloc(size_t n)
                                                                  MALLOC_CAP_8BIT |
                                                                  MALLOC_CAP_CACHE_ALIGNED);
     return p ? p : __real_eh_host_port_dma_alloc(n);
+}
+
+/*
+ * esp-hosted waits for the C6 to free a buffer with usleep(), 400 us growing
+ * to 30 ms. Under one tick (10 ms here) IDF's usleep spins, and the SDIO write
+ * task runs at priority 22: with the Wi-Fi link full it spun for long enough
+ * that the idle task starved and the watchdog reset the device. Short waits
+ * stay a spin, longer ones sleep.
+ */
+void __wrap_eh_host_port_task_delay_us(uint32_t us)
+{
+    if (us <= 1000) {
+        esp_rom_delay_us(us);
+        return;
+    }
+    const TickType_t ticks = pdMS_TO_TICKS((us + 999) / 1000);
+    vTaskDelay(ticks ? ticks : 1);
 }
 
 static bool s_unclaimed;
