@@ -7,6 +7,12 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.74.1] - 2026-10-29
+
+### Fixed
+- In Firefox the picture froze for a second or two at a time (#85).
+- The H.264 and MJPEG buttons were gone from the Video popup (#85).
+
 ## [0.74.0] - 2026-10-28
 
 ### Added

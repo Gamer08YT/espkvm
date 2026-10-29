@@ -4461,8 +4461,12 @@ static void video_sender_task(void *arg)
         }
         bool send = false;
         bool repair = false;
-        if (missed && f_payload == VIDEO_PAYLOAD_H264 && !s_video_need_key[i]) {
-            s_video_need_key[i] = true;
+        /* Ask for a keyframe but keep sending deltas: the picture smudges
+         * until it comes. Holding them back froze the picture (#85). A 1080p
+         * keyframe takes longer to send than one frame lasts, so the frame
+         * after it was skipped, the viewer waited for the next keyframe, and
+         * the one asked for went by while it was still sending. */
+        if (missed && f_payload == VIDEO_PAYLOAD_H264) {
             repair = true;
         }
         const int window = f_payload == VIDEO_PAYLOAD_H264 ? VIDEO_ACK_WINDOW_H264 : VIDEO_ACK_WINDOW;
