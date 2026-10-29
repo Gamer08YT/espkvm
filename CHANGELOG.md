@@ -7,6 +7,10 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Fixed
+- The device restarted by itself 10 s after the EDID or gamepad setting was
+  changed by hand. Now the console asks whether to restart.
+
 ## [0.74.1] - 2026-10-29
 
 ### Fixed

@@ -41,6 +41,16 @@ static const char *TAG = "prof_auto";
 /* Settings that take effect only at boot and a profile may hold. */
 static const char *const k_boot_keys[] = {"usb_pad", "usb_legacy", "edid_prof"};
 static int32_t s_boot_val[sizeof(k_boot_keys) / sizeof(k_boot_keys[0])];
+/* The profile those values came with. */
+static uint8_t s_boot_profile;
+
+static void take_boot_values(void)
+{
+    for (size_t i = 0; i < sizeof(k_boot_keys) / sizeof(k_boot_keys[0]); i++) {
+        s_boot_val[i] = kvm_setting_int(k_boot_keys[i]);
+    }
+    s_boot_profile = kvm_profiles_active();
+}
 
 static bool boot_values_moved(void)
 {
@@ -113,6 +123,13 @@ static void task(void *arg)
             strlcpy(acted, fp, sizeof(acted));
             (void)kvm_profiles_device_settled(&seen, fp);
         }
+        /* Same profile as at boot: a value that moved was set by hand in
+         * Settings, which marks it "restart" and leaves the restart to the
+         * user. Restarting for it here rebooted the device 10 s after an EDID
+         * change. */
+        if (kvm_profiles_active() == s_boot_profile) {
+            take_boot_values();
+        }
         /* After a choice by hand the console asks about the restart itself. */
         if (still >= RESTART_STILL_S && up_s >= RESTART_UPTIME_S && !kvm_profiles_manual() &&
             boot_values_moved()) {
@@ -123,18 +140,14 @@ static void task(void *arg)
             }
             /* Refused: take what is in effect now as the boot values, so it
              * is not asked again every second. */
-            for (size_t i = 0; i < sizeof(k_boot_keys) / sizeof(k_boot_keys[0]); i++) {
-                s_boot_val[i] = kvm_setting_int(k_boot_keys[i]);
-            }
+            take_boot_values();
         }
     }
 }
 
 void profile_auto_start(void)
 {
-    for (size_t i = 0; i < sizeof(k_boot_keys) / sizeof(k_boot_keys[0]); i++) {
-        s_boot_val[i] = kvm_setting_int(k_boot_keys[i]);
-    }
+    take_boot_values();
     /* Internal stack: it writes NVS, which a stack in PSRAM must not do. */
     if (xTaskCreate(task, "prof_auto", 3072, NULL, 2, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task not started; profiles are picked by hand only");
