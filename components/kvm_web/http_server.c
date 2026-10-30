@@ -28,6 +28,7 @@
 
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
+#include "kvm_ota_trial.h"
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -927,6 +928,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      "{\"project\":\"%s\",\"version\":\"%s\",\"built\":\"%s %s\","
                      "\"boardId\":\"%s\","
                      "\"idf\":\"%s\",\"partition\":\"%s\",\"updatable\":%s,\"ota\":%s,"
+                     "\"trialSeconds\":%u,"
                      "\"uptimeSeconds\":%llu,\"heapFree\":%u,\"psramFree\":%u,\"psramLargest\":%u,"
                      "\"internalFree\":%u,\"internalLargest\":%u,"
                      "\"tempC\":%d.%01u,\"thermal\":\"%s\","
@@ -947,6 +949,7 @@ static esp_err_t api_system_info_get(httpd_req_t *req)
                      app->project_name, app->version, app->date, app->time, kvm_board_id(),
                      app->idf_ver,
                      running ? running->label : "?", next ? "true" : "false", ota_json,
+                     (unsigned)kvm_ota_trial_left(),
                      (unsigned long long)(esp_timer_get_time() / 1000000),
                      (unsigned)esp_get_free_heap_size(),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -1110,10 +1113,44 @@ static esp_err_t api_system_update_post(httpd_req_t *req)
     return ret;
 }
 
+/*
+ * ?trial=N: keep the new image on trial for N seconds after it boots (see
+ * kvm_ota_trial.h). 0 or absent: it confirms itself as before. -1: a value out
+ * of range.
+ */
+static long update_trial_seconds(httpd_req_t *req)
+{
+    char q[32] = {0};
+    char v[12] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "trial", v, sizeof(v)) != ESP_OK) {
+        return 0;
+    }
+    const long secs = strtol(v, NULL, 10);
+    if (secs != 0 && (secs < KVM_OTA_TRIAL_MIN_S || secs > KVM_OTA_TRIAL_MAX_S)) {
+        return -1;
+    }
+    return secs;
+}
+
+/* A new image now would be written over the one a trial falls back to. */
+static esp_err_t refuse_during_trial(httpd_req_t *req)
+{
+    return send_json_error(req, "409 Conflict",
+                           "the last update is still on trial: keep it or roll it back first");
+}
+
 static esp_err_t api_system_update_post_body(httpd_req_t *req)
 {
     if (!kvm_auth_check(req)) {
         return kvm_auth_challenge(req);
+    }
+    if (kvm_ota_trial_left()) {
+        return refuse_during_trial(req);
+    }
+    const long trial = update_trial_seconds(req);
+    if (trial < 0) {
+        return send_json_error(req, "400 Bad Request", "trial must be 60 to 3600 seconds");
     }
     const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
     if (!target) {
@@ -1207,6 +1244,14 @@ static esp_err_t api_system_update_post_body(httpd_req_t *req)
         return send_json_error(req, "400 Bad Request",
                                err == ESP_ERR_OTA_VALIDATE_FAILED ? "not a valid firmware image"
                                                                   : esp_err_to_name(err));
+    }
+    /* Before the switch: an update asked to be on trial must not start without one. */
+    err = kvm_ota_trial_arm(target, (uint32_t)trial);
+    if (err != ESP_OK) {
+        kvm_display_notice("UPDATE", "failed", -1, 10000);
+        ws_broadcast_update(UPDATE_FAILED, 0);
+        ESP_LOGE(TAG, "kvm_ota_trial_arm: %s", esp_err_to_name(err));
+        return send_json_error(req, "500 Internal Server Error", "could not store the trial");
     }
     err = esp_ota_set_boot_partition(target);
     if (err != ESP_OK) {
@@ -2114,9 +2159,17 @@ static esp_err_t api_system_install_post(httpd_req_t *req)
     if (cJSON_IsString(jv) && jv->valuestring) {
         snprintf(version, sizeof(version), "%s", jv->valuestring);
     }
+    const cJSON *jt = cJSON_GetObjectItem(j, "trial");
+    const double trial = cJSON_IsNumber(jt) ? jt->valuedouble : 0;
     cJSON_Delete(j);
 
-    const esp_err_t err = fw_install_start(version);
+    if (kvm_ota_trial_left()) {
+        return refuse_during_trial(req);
+    }
+    if (trial != 0 && (trial < KVM_OTA_TRIAL_MIN_S || trial > KVM_OTA_TRIAL_MAX_S)) {
+        return send_json_error(req, "400 Bad Request", "trial must be 60 to 3600 seconds");
+    }
+    const esp_err_t err = fw_install_start(version, (uint32_t)trial);
     if (err == ESP_ERR_INVALID_ARG) {
         return send_json_error(req, "400 Bad Request", "that is not a published version");
     }
@@ -2151,6 +2204,40 @@ static esp_err_t api_system_install_get(httpd_req_t *req)
              k_states[st.state], st.percent, st.version, st.message);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, body);
+}
+
+/* The running update is on trial and the operator says it works. */
+static esp_err_t api_system_update_keep_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    const esp_err_t err = kvm_ota_trial_keep();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_json_error(req, "409 Conflict", "no update is on trial");
+    }
+    if (err != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"kept\"}");
+}
+
+/* The running update is on trial and the operator wants the old image back now. */
+static esp_err_t api_system_update_rollback_post(httpd_req_t *req)
+{
+    if (!kvm_auth_check(req)) {
+        return kvm_auth_challenge(req);
+    }
+    if (!kvm_ota_trial_left()) {
+        return send_json_error(req, "409 Conflict", "no update is on trial");
+    }
+    kvm_ota_trial_rollback();
+    ESP_LOGW(TAG, "update rolled back by the operator; restarting");
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t sent = httpd_resp_sendstr(req, "{\"status\":\"restarting\"}");
+    kvm_web_restart_soon(300);
+    return sent;
 }
 
 static esp_err_t api_system_boot_slot_post(httpd_req_t *req)
@@ -2950,6 +3037,11 @@ static void wait_sendable(int sockfd, bool for_read, int64_t deadline)
  * for its socket, so a slow viewer does not hold up the others.
  */
 static SemaphoreHandle_t s_tls_write_turn;
+/* Set in the video and /stream senders. Only they wait for the turn: one
+ * write of theirs is a whole frame (150 KB of MJPEG at 1080p, ~70 ms to
+ * encrypt), and a pong or an API reply from the server's task waited behind
+ * it while the pointer moves piled up unread. */
+static __thread bool t_stream_sender;
 
 static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_t buf_len, int flags)
 {
@@ -2965,12 +3057,14 @@ static int locked_ssl_send(httpd_handle_t hd, int sockfd, const char *buf, size_
     const int slot = tx_lock(sockfd);
     const int64_t deadline = esp_timer_get_time() + 5000000; /* 100 KB at 20 KB/s */
     size_t done = 0;
+    /* A big write from elsewhere (a page, a download) takes its turn too. */
+    const bool turn = s_tls_write_turn && (t_stream_sender || buf_len > 16 * 1024);
     while (done < buf_len && esp_timer_get_time() < deadline) {
-        if (s_tls_write_turn) {
+        if (turn) {
             (void)xSemaphoreTake(s_tls_write_turn, portMAX_DELAY);
         }
         const ssize_t ret = esp_tls_conn_write(ctx->tls, buf + done, buf_len - done);
-        if (s_tls_write_turn) {
+        if (turn) {
             xSemaphoreGive(s_tls_write_turn);
         }
         if (ret > 0) {
@@ -3721,6 +3815,7 @@ static void stream_worker_task(void *arg)
     httpd_req_t *req = (httpd_req_t *)arg;
     char hdr[96];
 
+    t_stream_sender = true;
     video_frame_viewer_enter();
     s_stream_workers++;
     /* Send whatever is on screen right now rather than waiting for the next
@@ -4386,6 +4481,7 @@ static void video_sender_task(void *arg)
     size_t packet_cap = 0;
     uint32_t last_seq = 0;
 
+    t_stream_sender = true;
     for (;;) {
         if (!video_sender_wait_room(&v)) {
             break;
@@ -5228,6 +5324,8 @@ httpd_handle_t http_server_start(void)
          .method = HTTP_POST,
          .handler = api_wifi_coproc_update_post},
         {.uri = "/api/v1/system/update", .method = HTTP_POST, .handler = api_system_update_post},
+        {.uri = "/api/v1/system/update/keep", .method = HTTP_POST, .handler = api_system_update_keep_post},
+        {.uri = "/api/v1/system/update/rollback", .method = HTTP_POST, .handler = api_system_update_rollback_post},
         {.uri = "/api/v1/system/log", .method = HTTP_GET, .handler = api_system_log_get},
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
         {.uri = "/api/v1/system/coredump", .method = HTTP_GET, .handler = api_system_coredump_get},

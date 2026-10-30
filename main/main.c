@@ -27,6 +27,7 @@
 #include "ethernet.h"
 #include "wifi.h"
 #include "http_server.h"
+#include "kvm_ota_trial.h"
 #include "kvm_atx.h"
 #include "kvm_serial.h"
 #include "kvm_agent.h"
@@ -88,25 +89,25 @@ static void apply_log_level(void)
      * everything, and these are exactly the tags someone debugging TLS or a
      * refused socket wants.
      */
-    if (level == ESP_LOG_INFO) {
-        esp_log_level_set("esp_https_server", ESP_LOG_WARN);
-        esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
-        /* A line per connection once a certificate selection hook is set. */
-        esp_log_level_set("esp-tls-mbedtls", ESP_LOG_WARN);
+    /* "*" does not reset a tag that has its own level, so the held tags are
+       set every time, or they stay held after a switch to DEBUG. */
+    const bool hold = level == ESP_LOG_INFO;
+    esp_log_level_set("esp_https_server", hold ? ESP_LOG_WARN : level);
+    esp_log_level_set("httpd_uri", hold ? ESP_LOG_ERROR : level);
+    /* A line per connection once a certificate selection hook is set. */
+    esp_log_level_set("esp-tls-mbedtls", hold ? ESP_LOG_WARN : level);
 
-        /*
-         * The Tailscale client (microlink) logs a line per probe, per relay
-         * heartbeat and per periodic tick - at INFO it fills the whole ring in
-         * under a minute, so a real fault, a boot that rolls back, a
-         * notification failure, is gone before anyone reads it. Held at WARN
-         * unless the setting is at DEBUG, where someone is chasing the tunnel
-         * and wants exactly these.
-         */
-        static const char *const ml_tags[] = {"ml_wg_mgr", "ml_derp", "ml_net_io",
-                                              "ml_coord",  "ml_stun", "ml_h2"};
-        for (size_t i = 0; i < sizeof(ml_tags) / sizeof(ml_tags[0]); i++) {
-            esp_log_level_set(ml_tags[i], ESP_LOG_WARN);
-        }
+    /*
+     * The Tailscale client (microlink) logs a line per probe, per relay
+     * heartbeat and per periodic tick - at INFO it fills the whole ring in
+     * under a minute, so a real fault, a boot that rolls back, a notification
+     * failure, is gone before anyone reads it. Held at WARN unless the setting
+     * is at DEBUG, where someone is chasing the tunnel and wants exactly these.
+     */
+    static const char *const ml_tags[] = {"ml_wg_mgr", "ml_derp", "ml_net_io",
+                                          "ml_coord",  "ml_stun", "ml_h2"};
+    for (size_t i = 0; i < sizeof(ml_tags) / sizeof(ml_tags[0]); i++) {
+        esp_log_level_set(ml_tags[i], hold ? ESP_LOG_WARN : level);
     }
 }
 
@@ -261,6 +262,9 @@ static void apply_media_selection(void)
  */
 static void confirm_ota_image(void)
 {
+    if (kvm_ota_trial_begin()) {
+        return; /* on trial: the console confirms it, or a timer rolls it back */
+    }
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;
     if (esp_ota_get_state_partition(running, &ota_state) != ESP_OK) {

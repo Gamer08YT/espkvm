@@ -841,7 +841,7 @@ static void fw_task(void *arg)
         if (s_fw_want_install) {
             s_fw_want_install = false;
             if (latest[0]) {
-                const esp_err_t err = fw_install_start(latest);
+                const esp_err_t err = fw_install_start(latest, 0);
                 ESP_LOGW(TAG, "install %s requested from Home Assistant: %s", latest,
                          esp_err_to_name(err));
             } else {

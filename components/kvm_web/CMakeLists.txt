@@ -5,6 +5,7 @@ idf_component_register(
         "acme.c"
         "auth.c"
         "fw_install.c"
+        "ota_trial.c"
         "record_api.c"
         "totp.c"
         "cec_api.c"
@@ -60,6 +61,7 @@ idf_component_register(
         mbedtls
         nvs_flash
         esp_hw_support
+        esp_hal_wdt
         kvm_board
         esp_http_client
         esp-tls

@@ -90,7 +90,7 @@ Useful for what it does today, and honest about the rest.
 | Wi-Fi, a setup hotspot, Ethernet with Wi-Fi as the backup | works; on boards with a Wi-Fi chip |
 | Tailscale or WireGuard | works; off by default |
 | Home Assistant over MQTT | works; off by default |
-| Updates over the network, with rollback | works |
+| Updates over the network, with rollback and a trial for remote devices | works |
 | A small status display, a battery-backed clock | works; optional |
 | HDMI audio, in the console and in recordings | new; on TC358743 boards, three wires to the P4 |
 

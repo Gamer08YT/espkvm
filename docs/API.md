@@ -62,8 +62,10 @@ be given a URL.
 | `GET /api/v1/system/memory` | each heap (internal, DMA, PSRAM) with its largest free piece and the lowest it has been, and every task's stack: where it is, its size and how close it has come to the end |
 | `GET /api/v1/system/log` | the device's own log, as a file |
 | `GET /api/v1/system/coredump`, `DELETE` | the crash dump a panic left in flash, as a file, or throw it away |
-| `POST /api/v1/system/update` | firmware image, written to the spare slot |
-| `POST /api/v1/system/install`, `GET` | `{"version"}`: the device fetches that published release and installs it; GET is the progress |
+| `POST /api/v1/system/update` | firmware image, written to the spare slot. `?trial=600` puts it on trial (60 to 3600 s): it goes back to the old image unless kept in time |
+| `POST /api/v1/system/install`, `GET` | `{"version"}`: the device fetches that published release and installs it; GET is the progress. `"trial": 600` as above |
+| `POST /api/v1/system/update/keep` | keep the update that is on trial. `trialSeconds` in `/system/info` says how long is left, 0 when none is |
+| `POST /api/v1/system/update/rollback` | drop the update that is on trial and restart onto the old image |
 | `POST /api/v1/system/boot-slot` | boot the other slot on the next restart |
 | `POST /api/v1/system/restart` | restart, for settings that need one |
 | `GET /api/v1/system/usbprobe` | the target's USB enumeration fingerprint and the OS guessed from it |

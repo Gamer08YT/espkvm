@@ -19,6 +19,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "kvm_ota_trial.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "kvm_board_header.h"
@@ -56,6 +57,7 @@ static const char *TAG = "fw_install";
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static fw_install_status_t s_status;
 static char s_version[FW_INSTALL_VERSION_MAX];
+static uint32_t s_trial_s; /* see kvm_ota_trial.h; 0 = none */
 
 /*
  * The lock is a spinlock, so what happens under it has to be short - it runs
@@ -360,6 +362,12 @@ static void install_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+    err = kvm_ota_trial_arm(target, s_trial_s);
+    if (err != ESP_OK) {
+        fail(NULL, 0, "could not store the trial");
+        vTaskDelete(NULL);
+        return;
+    }
     err = esp_ota_set_boot_partition(target);
     if (err != ESP_OK) {
         fail(NULL, 0, esp_err_to_name(err));
@@ -464,12 +472,13 @@ esp_err_t fw_latest_version(char *out, size_t out_len)
     return res;
 }
 
-esp_err_t fw_install_start(const char *version)
+esp_err_t fw_install_start(const char *version, uint32_t trial_s)
 {
     if (!version_ok(version)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (fw_install_busy()) {
+    /* During a trial the spare slot holds the image it falls back to. */
+    if (fw_install_busy() || kvm_ota_trial_left()) {
         return ESP_ERR_INVALID_STATE;
     }
     /* The device reaching the internet by itself is opt-in, because for most of
@@ -478,6 +487,7 @@ esp_err_t fw_install_start(const char *version)
         return ESP_ERR_NOT_ALLOWED;
     }
     strlcpy(s_version, version, sizeof(s_version));
+    s_trial_s = trial_s;
     char ver[sizeof(s_status.version)];
     const size_t vlen = strlcpy(ver, version, sizeof(ver)) + 1;
     portENTER_CRITICAL(&s_lock);

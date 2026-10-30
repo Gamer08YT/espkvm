@@ -7,9 +7,39 @@ bumps the patch).
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-10-30
+
+### Added
+- Updates on trial, for a device that is far away. After the update the
+  console has to reach the device again and say "keep it". If nothing does in
+  10 minutes, the device goes back to the version it had. So an update that
+  breaks Wi-Fi, Tailscale or the console undoes itself. By default the console
+  keeps the update as soon as it is back. It can also ask you to check first,
+  or skip the trial (Firmware popup, "After an update"). Same over the API:
+  `?trial=600`, then `POST /api/v1/system/update/keep`.
+- The Video popup shows "Shown in this tab": the frames this browser really
+  draws. "Published" is what the device encodes. At 1080p MJPEG over HTTPS
+  that can be 30 against 15.
+
 ### Fixed
+- Mouse and keys lagged behind with MJPEG at 1080p since 0.74.0, worse the
+  more you moved (#85). A video frame held the encryption for ~70 ms, and the
+  console's replies waited behind it while the input piled up. Now only video
+  waits its turn. Input round trip under MJPEG: 78 ms -> 3 ms.
 - The device restarted by itself 10 s after the EDID or gamepad setting was
   changed by hand. Now the console asks whether to restart.
+- After WebRTC dropped once (say, a Tailscale relay hiccup), the console stayed
+  on the slower WebSocket until the page was reloaded. Now it tries WebRTC again
+  after 30 s, then less often.
+- Over Tailscale a phone or laptop that restarted its Tailscale app could stay
+  on the slower relay path for good. The device now picks up the peer's new
+  key and tries a direct path again.
+- Over Tailscale the direct path dropped to the relay every 15 s and came back
+  a moment later. The device checked the path every 30 s, but trusted it only
+  for 15. Now it checks every 5 s.
+- The log no longer gets "DISCO decrypt failed" every 15 s. It was the
+  device's own probe coming back through an old Tailscale node of itself.
+- Log level "Debug" did not show the Tailscale and HTTPS lines it promised.
 
 ## [0.74.1] - 2026-10-29
 

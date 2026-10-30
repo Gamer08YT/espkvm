@@ -20,6 +20,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /** Longest version string accepted, including the terminator. */
 #define FW_INSTALL_VERSION_MAX 32
@@ -48,8 +49,10 @@ typedef struct {
  * @param version a published tag, e.g. "v.0.35.0". Checked against a strict
  *        shape before it is put in a URL - it is operator input, and it must
  *        never be able to point the device somewhere else.
+ * @param trial_s keep the new image on trial this long after it boots
+ *        (kvm_ota_trial.h), 0 for none. The caller checks the range.
  * @return ESP_ERR_INVALID_ARG for a version that is not a tag,
- *         ESP_ERR_INVALID_STATE if one is already running,
+ *         ESP_ERR_INVALID_STATE if one is already running or an update is on trial,
  *         ESP_ERR_NO_MEM if the task will not start.
  */
 /**
@@ -62,7 +65,7 @@ typedef struct {
  */
 esp_err_t fw_latest_version(char *out, size_t out_len);
 
-esp_err_t fw_install_start(const char *version);
+esp_err_t fw_install_start(const char *version, uint32_t trial_s);
 
 /** Where it has got to. Safe to call at any time. */
 void fw_install_get_status(fw_install_status_t *out);

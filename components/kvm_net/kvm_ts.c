@@ -192,10 +192,11 @@ static void ts_reconcile(void)
         .app_version = esp_app_get_description()->version,
         .enable_derp = true,
         /* Direct paths. microlink ignores these two flags and always runs
-         * STUN and DISCO; the intervals below keep that probing slow. */
+         * STUN and DISCO. The heartbeat has to beat inside the 15 s a direct
+         * path is trusted for, or the path drops to DERP every 15 s. */
         .enable_stun = true,
         .enable_disco = true,
-        .disco_heartbeat_ms = 30000,
+        .disco_heartbeat_ms = 5000,
         .stun_interval_ms = 60000,
         /* Reach the hosted control plane, which is HTTPS-only. Operators pointing
          * at a plain-HTTP Headscale can turn this off. */
