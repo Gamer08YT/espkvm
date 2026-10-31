@@ -7,6 +7,10 @@ bumps the patch).
 
 ## [Unreleased]
 
+### Added
+- Optional VNC server with VNC password authentication, Tight/JPEG screen
+  updates, and keyboard and pointer input. It is off by default.
+
 ## [0.75.0] - 2026-10-30
 
 ### Added
