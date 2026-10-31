@@ -19,6 +19,7 @@ idf_component_register(
         kvm_agent
         kvm_audio
         kvm_netlog
+        kvm_vnc
         kvm_webrtc
         kvm_mqtt
         nvs_flash
