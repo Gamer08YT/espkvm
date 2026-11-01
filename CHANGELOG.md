@@ -10,6 +10,8 @@ bumps the patch).
 ### Added
 - Optional VNC server with VNC password authentication, Tight/JPEG screen
   updates, and keyboard and pointer input. It is off by default.
+- `POST /api/v1/vnc/session` issues a one-use, 60-second ticket that a standard
+  VNC viewer can enter as its password.
 
 ### Fixed
 - VNC reuses its H.264 JPEG encoder and output buffer for a connected viewer,
