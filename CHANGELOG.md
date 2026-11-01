@@ -11,6 +11,12 @@ bumps the patch).
 - Optional VNC server with VNC password authentication, Tight/JPEG screen
   updates, and keyboard and pointer input. It is off by default.
 
+### Fixed
+- VNC reuses its H.264 JPEG encoder and output buffer for a connected viewer,
+  waits for new frames on incremental requests, times out stalled handshakes,
+  shares the web login throttle, and keeps VNC input independent from console
+  input. VNC on the WiFi hotspot is now an opt-in setting.
+
 ## [0.75.0] - 2026-10-30
 
 ### Added
