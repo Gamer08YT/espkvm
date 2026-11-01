@@ -19,7 +19,9 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#if CONFIG_IDF_TARGET_ESP32P4 && !CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
 #include "soc/usb_dwc_struct.h"
+#endif
 #include "tinyusb.h"
 #include "tinyusb_cdc_acm.h"
 #include "tinyusb_default_config.h"
@@ -314,11 +316,9 @@ static const uint8_t k_cfg_header[] = {
 /*
  * interface, string index, protocol, report descriptor length, endpoint, size, interval.
  *
- * The interval is 4. At high speed - which this device runs at - it is an
- * exponent, 2^(n-1) microframes of 125 us, so the 10 these had was a poll
- * every 64 ms: on average 32 ms added to every key and every pointer move.
- * 4 is 1 ms at high speed. At full speed it is plain milliseconds, so the full
- * speed copy is patched to 1 (see build_config_descriptor).
+ * At high speed, bInterval 4 is 1 ms. At full speed, bInterval is plain
+ * milliseconds, so the full-speed copy is patched to 1 by
+ * build_config_descriptor().
  */
 static const uint8_t k_hid_ifaces[] = {
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(s_kbd_report_desc), 0x81,
@@ -337,8 +337,7 @@ _Static_assert(sizeof(k_hid_ifaces) == NUM_HID_ITF * TUD_HID_DESC_LEN, "one HID 
 static const uint8_t k_hid_kbd_legacy[] = {
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(s_kbd_report_desc), 0x81, 8, 10),
 };
-/* The gamepad: 64-byte endpoints like the real pad. An interval of 4 is 4 ms at
- * full speed and 1 ms at high speed. */
+/* The gamepad: 64-byte endpoints like the real pad. */
 static const uint8_t k_pad_iface_added[] = {
     TUD_HID_INOUT_DESCRIPTOR(ITF_PAD_ADDED, 0, HID_ITF_PROTOCOL_NONE, sizeof(s_pad_report_desc),
                              EPNUM_PAD_OUT_ADDED, EPNUM_PAD_IN_ADDED, 64, 4),
@@ -1820,7 +1819,13 @@ esp_err_t usb_hid_init(void)
                  with_msc ? " + mass storage" : "", with_cdc ? " + serial port" : "");
     }
 
+    /* In UVC mode the target-facing device moves to OTG 1.1, freeing OTG 2.0
+     * for the capture-card host. Keep the existing OTG 2.0 path otherwise. */
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+    tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_FULL_SPEED(tinyusb_on_event, NULL);
+#else
     tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(tinyusb_on_event);
+#endif
     if (with_cdc) {
         s_kvm_device_desc.bDeviceClass = TUSB_CLASS_MISC;
         s_kvm_device_desc.bDeviceSubClass = MISC_SUBCLASS_COMMON;
@@ -1890,12 +1895,10 @@ esp_err_t usb_hid_init(void)
     (void)esp_timer_create(&watch_args, &s_watchdog_timer);
 
     tud_disconnect();
-#if (TUD_OPT_HIGH_SPEED)
+#if TUD_OPT_HIGH_SPEED
     if (s_kbd_only || s_pad == PAD_ALONE) {
-        /* Full speed (USB 1.1) on the high-speed port. TinyUSB always asks this
-         * PHY for high speed, so set the controller's device speed ourselves
-         * while detached; nothing rewrites it later. 1 = full speed on a HS PHY.
-         * The pad alone runs at full speed because the real one does. */
+        /* Older BIOSes and the standalone gamepad use Full-Speed descriptors.
+         * The HS DCD defaults to High Speed, so set Full Speed while detached. */
         USB_DWC_HS.dcfg_reg.devspd = 1;
     }
 #endif

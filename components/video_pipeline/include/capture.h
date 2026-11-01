@@ -106,6 +106,10 @@ void capture_start(void);
 
 void capture_status_get(kvm_video_status_t *out);
 
+/** Status and frame counters for a non-CSI capture source such as USB UVC. */
+void capture_source_report_signal(bool present, uint32_t hres, uint32_t vres, uint32_t fps_x100);
+void capture_source_report_frame(size_t bytes);
+
 /** Raw form of the two counters above: frames since boot, esp_timer time of the last. */
 void capture_frame_counter(uint32_t *frames, int64_t *last_us);
 

@@ -1,3 +1,25 @@
+set(capture_priv_requires
+        tc358743
+        kvm_board
+        kvm_screentext
+        kvm_regions
+        espressif__esp_h264
+        esp_driver_ppa
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_cam
+        esp_driver_isp
+        esp_driver_jpeg
+        esp_hw_support
+        esp_psram
+        esp_mm
+        esp_timer
+        nvs_flash
+)
+if(CONFIG_KVM_CAPTURE_SOURCE_USB_UVC)
+    list(APPEND capture_priv_requires kvm_uvc)
+endif()
+
 idf_component_register(
     SRCS
         "capture.c"
@@ -25,22 +47,7 @@ idf_component_register(
         # The capture path never names a bridge driver - it asks kvm_bridge which
         # one answered - but a driver still has to be in the image to register
         # itself, so the ones this firmware ships are required here.
-        tc358743
-        kvm_board
-        kvm_screentext
-        kvm_regions
-        espressif__esp_h264
-        esp_driver_ppa
-        esp_driver_gpio
-        esp_driver_i2c
-        esp_driver_cam
-        esp_driver_isp
-        esp_driver_jpeg
-        esp_hw_support
-        esp_psram
-        esp_mm
-        esp_timer
-        nvs_flash
+        ${capture_priv_requires}
 )
 
 # capture.c parks the CSI DMA before every deliberate restart; see the comment

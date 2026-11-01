@@ -39,6 +39,20 @@ Being an ESP32-P4 board is not enough, and none of these is a pin map away:
   the keyboard and mouse.
 - **A network**: an Ethernet PHY, or an onboard ESP32-C6 (esp-hosted).
 
+The optional USB UVC capture build supports the Ziyan 345f:2109 card at
+1920x1080, 30 fps, MJPEG, and uses both P4 USB peripherals at once:
+`CONFIG_KVM_CAPTURE_SOURCE_USB_UVC=y` moves the target-facing HID/MSC/CDC device
+to OTG 1.1 Full Speed (12 Mbit/s) and runs the UVC host on OTG 2.0 High Speed.
+Full Speed is sufficient for keyboard and mouse input; virtual-media transfers
+are slower than on the default High-Speed device connection. The P4's
+Full-Speed D+/D- pins default to GPIO26/27; boards with the USB PHY select eFuse
+set use GPIO24/25 instead. Verify the board's routing and eFuse before wiring.
+The target computer must connect to the Full-Speed pair. The capture card must
+connect to the High-Speed pair, with a switched 5 V host supply rated for the
+card (the Ziyan listing specifies up to 500 mA). The P4-ETH's existing MX1.25
+lead is wired to the High-Speed port; it cannot remain the target-facing HID
+connection in this mode. USB UAC audio from the capture card is not routed yet.
+
 The LILYGO T-Halow P4 is the worked example of a board that looks right and is
 not: 8 MB PSRAM, RMII and USB OTG D+/D- only on the M.2 edge, and a 24-pin
 camera FPC with no 3.3 V and a 1.8 V I2C.

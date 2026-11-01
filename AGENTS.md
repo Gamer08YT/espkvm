@@ -52,6 +52,7 @@ and commit. The pin is what the firmware builds against.
 components/
   tc358743/       HDMI bridge driver (inherited; hard-won register sequence)
   video_pipeline/ CSI capture + MJPEG/H.264 encoders behind one frame store
+  kvm_uvc/        optional USB High-Speed UVC host for a USB capture source
   kvm_hid/        composite USB HID (kbd/abs+rel mouse/consumer) + MSC
   kvm_storage/    microSD mount, bus speed, virtual media (images served read-only)
   kvm_config/     NVS settings, capability registry, thermal guard

@@ -43,7 +43,7 @@
 #include "kvm_ts.h"
 #include "kvm_tls.h"
 #include "kvm_wg.h"
-#if CONFIG_KVM_ENABLE_WEBRTC
+#if CONFIG_KVM_ENABLE_WEBRTC && !CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
 #include "kvm_webrtc.h"
 #endif
 #include "kvm_thermal.h"
@@ -764,7 +764,7 @@ void app_main(void)
      * here must not leave a freshly-flashed but reachable image unconfirmed and
      * bound for rollback.
      */
-#if CONFIG_KVM_ENABLE_WEBRTC
+#if CONFIG_KVM_ENABLE_WEBRTC && !CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
     /* After the confirm for the same reason; its certificate is made in the
      * background, so the first offer may have to wait a second for it. */
     if (kvm_webrtc_init(kvm_auth_session_alive) != ESP_OK) {
