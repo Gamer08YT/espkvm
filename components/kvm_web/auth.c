@@ -138,6 +138,34 @@ static void unlock(void)
     }
 }
 
+void kvm_auth_attempt_wait(void)
+{
+    lock();
+    const uint32_t failures = s_failures;
+    unlock();
+    if (failures > 3) {
+        uint32_t delay_ms = 500u << (failures - 4 > 5 ? 5 : failures - 4);
+        if (delay_ms > 15000u) {
+            delay_ms = 15000u;
+        }
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+}
+
+void kvm_auth_attempt_failed(void)
+{
+    lock();
+    s_failures++;
+    unlock();
+}
+
+void kvm_auth_attempt_succeeded(void)
+{
+    lock();
+    s_failures = 0;
+    unlock();
+}
+
 /*
  * WebSockets are authenticated once, at the upgrade, and then by socket.
  *
@@ -1226,24 +1254,14 @@ static esp_err_t auth_login_post(httpd_req_t *req)
         return send_json(req, "400 Bad Request", "{\"error\":\"user and password are required\"}");
     }
 
-    /* The delay grows with the number of failures and is paid before the
-     * answer, so guessing costs the guesser time whether or not they are
-     * right. */
-    lock();
-    const uint32_t failures = s_failures;
-    unlock();
-    if (failures > 3) {
-        uint32_t delay_ms = 500u << (failures - 4 > 5 ? 5 : failures - 4);
-        if (delay_ms > 15000u) {
-            delay_ms = 15000u;
-        }
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    }
+    /* The delay is shared with password-protected protocols such as VNC. */
+    kvm_auth_attempt_wait();
 
     const bool user_ok = strcmp(user, kvm_setting_str("sec_user")) == 0;
     if (!user_ok || !password_matches(password)) {
+        kvm_auth_attempt_failed();
         lock();
-        const uint32_t count = ++s_failures;
+        const uint32_t count = s_failures;
         unlock();
         ESP_LOGW(TAG, "failed login as '%s' (%lu in a row)", user, (unsigned long)count);
         memset(password, 0, sizeof(password));
@@ -1257,16 +1275,15 @@ static esp_err_t auth_login_post(httpd_req_t *req)
                              "{\"error\":\"enter the code from your authenticator app\",\"needCode\":true}");
         }
         if (!second_factor_ok(code, browser_time)) {
+            kvm_auth_attempt_failed();
             lock();
-            const uint32_t count = ++s_failures;
+            const uint32_t count = s_failures;
             unlock();
             ESP_LOGW(TAG, "wrong two-factor code for '%s' (%lu in a row)", user, (unsigned long)count);
             return send_json(req, "401 Unauthorized", "{\"error\":\"wrong code\",\"needCode\":true}");
         }
     }
-    lock();
-    s_failures = 0;
-    unlock();
+    kvm_auth_attempt_succeeded();
     /* Signed in, so the time it brought can be trusted as far as a clock goes. */
     kvm_web_clock_from_browser(browser_time);
 
