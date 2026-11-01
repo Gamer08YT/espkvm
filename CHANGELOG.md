@@ -10,6 +10,9 @@ bumps the patch).
 ### Added
 - Optional VNC server with VNC password authentication, Tight/JPEG screen
   updates, and keyboard and pointer input. It is off by default.
+- Optional ESP32-P4 USB UVC capture mode for the Ziyan 345f:2109 card. HID,
+  virtual media, and the target serial port use OTG 1.1 Full Speed; OTG 2.0
+  High Speed becomes the UVC host. USB UAC audio is not routed yet.
 
 ### Fixed
 - VNC reuses its H.264 JPEG encoder and output buffer for a connected viewer,

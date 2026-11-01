@@ -17,6 +17,15 @@
 #include "screentext_store.h"
 #include "esp_task_wdt.h"
 
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+#include <stdlib.h>
+
+#include "esp_heap_caps.h"
+#include "kvm_caps.h"
+#include "kvm_uvc.h"
+#include "video_frame.h"
+#endif
+
 /*
  * Telemetry lives here rather than in the capture task so the HTTP layer can
  * read it without touching CSI state. Writers are the capture and monitor
@@ -38,6 +47,9 @@ static uint32_t s_window_waits, s_window_sends, s_window_total_max_us;
 static uint32_t s_window_encodes;
 static uint64_t s_window_bytes;
 static int64_t s_window_start_us;
+static uint32_t s_external_frames;
+static int64_t s_external_last_frame_us;
+static int64_t s_external_tick_us;
 
 void capture_status_set_mode(uint32_t hres, uint32_t vres, bool interlaced)
 {
@@ -82,6 +94,34 @@ void capture_status_add_frame(size_t bytes)
     s_window_frames++;
     s_window_bytes += bytes;
     taskEXIT_CRITICAL(&s_mu);
+}
+
+void capture_source_report_signal(bool present, uint32_t hres, uint32_t vres, uint32_t fps_x100)
+{
+    capture_status_set_signal(present, 0);
+    if (present) {
+        capture_status_set_mode(hres, vres, false);
+        taskENTER_CRITICAL(&s_mu);
+        s_status.fps_x100 = fps_x100;
+        taskEXIT_CRITICAL(&s_mu);
+    }
+}
+
+void capture_source_report_frame(size_t bytes)
+{
+    capture_status_add_frame(bytes);
+    const int64_t now = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_mu);
+    s_external_frames++;
+    s_external_last_frame_us = now;
+    const bool tick = now - s_external_tick_us >= 1000000;
+    if (tick) {
+        s_external_tick_us = now;
+    }
+    taskEXIT_CRITICAL(&s_mu);
+    if (tick) {
+        capture_status_tick();
+    }
 }
 
 /*
@@ -265,7 +305,14 @@ void capture_status_get(kvm_video_status_t *out)
     out->flat_ms = capture_flat_ms();
     out->flat_dark = out->flat_ms && capture_flat_dark();
     int64_t last_us = 0;
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+    taskENTER_CRITICAL(&s_mu);
+    out->frames = s_external_frames;
+    last_us = s_external_last_frame_us;
+    taskEXIT_CRITICAL(&s_mu);
+#else
     capture_frame_counter(&out->frames, &last_us);
+#endif
     const int64_t age = last_us ? (esp_timer_get_time() - last_us) / 1000 : -1;
     out->h264_cpu = CAPTURE_YUV_SWAP;
     out->frame_age_ms = age < 0 ? UINT32_MAX : age > UINT32_MAX - 1 ? UINT32_MAX - 1 : (uint32_t)age;
@@ -305,6 +352,10 @@ void capture_reserve_early(void)
         return;
     }
     s_probed = true;
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+    ESP_LOGI(CAPTURE_LOG_TAG, "USB UVC source selected; CSI codecs are not reserved");
+    return;
+#endif
     /* Its own task: app_main's stack is 3.5 KB, too small for the encoders. */
     SemaphoreHandle_t done = xSemaphoreCreateBinary();
     if (done && xTaskCreatePinnedToCore(reserve_task, "codecs", 8192, done, 5, NULL, 0) == pdPASS) {
@@ -317,6 +368,7 @@ void capture_reserve_early(void)
     }
 }
 
+#if !CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
 static void camera_task(void *arg)
 {
     (void)arg;
@@ -334,6 +386,82 @@ static void camera_task(void *arg)
      * now gives up gracefully when there is no capture card. */
     vTaskDelete(NULL);
 }
+#endif
+
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+#define UVC_CARD_VID 0x345f
+#define UVC_CARD_PID 0x2109
+#define UVC_CAPTURE_HRES 1920
+#define UVC_CAPTURE_VRES 1080
+#define UVC_CAPTURE_FPS 30
+#define UVC_FRAME_CAP ((size_t)UVC_CAPTURE_HRES * UVC_CAPTURE_VRES * 2u)
+
+static uint8_t *s_uvc_frame_bufs[VIDEO_SLOT_COUNT];
+
+static void uvc_frame_received(const uint8_t *data, size_t len, uint16_t hres,
+                               uint16_t vres, uint8_t fps, void *user_ctx)
+{
+    (void)user_ctx;
+    if (!data || !len || len > UVC_FRAME_CAP) {
+        return;
+    }
+    int slot = -1;
+    uint8_t *dst = NULL;
+    size_t cap = 0;
+    if (video_frame_begin_write(&slot, &dst, &cap, 0) != ESP_OK || len > cap) {
+        return;
+    }
+    memcpy(dst, data, len);
+    video_frame_set_source_time(esp_timer_get_time());
+    video_frame_publish(slot, len, true);
+    capture_source_report_frame(len);
+    (void)hres;
+    (void)vres;
+    (void)fps;
+}
+
+static void uvc_state_changed(bool connected, uint16_t hres, uint16_t vres,
+                              uint8_t fps, void *user_ctx)
+{
+    (void)user_ctx;
+    if (connected) {
+        capture_source_report_signal(true, hres, vres, (uint32_t)fps * 100u);
+        kvm_cap_report(KVM_CAP_VIDEO, true, NULL);
+    } else {
+        capture_source_report_signal(false, 0, 0, 0);
+        kvm_cap_report(KVM_CAP_VIDEO, false, "USB UVC capture card disconnected");
+    }
+}
+
+static esp_err_t capture_uvc_start(void)
+{
+    for (int i = 0; i < VIDEO_SLOT_COUNT; i++) {
+        s_uvc_frame_bufs[i] = heap_caps_malloc(UVC_FRAME_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_uvc_frame_bufs[i]) {
+            for (int j = 0; j < i; j++) {
+                free(s_uvc_frame_bufs[j]);
+                s_uvc_frame_bufs[j] = NULL;
+            }
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    video_frame_install(VIDEO_PAYLOAD_JPEG, s_uvc_frame_bufs, VIDEO_SLOT_COUNT, UVC_FRAME_CAP);
+
+    const kvm_uvc_config_t config = {
+        .vid = UVC_CARD_VID,
+        .pid = UVC_CARD_PID,
+        .hres = UVC_CAPTURE_HRES,
+        .vres = UVC_CAPTURE_VRES,
+        .fps = UVC_CAPTURE_FPS,
+    };
+    kvm_cap_report(KVM_CAP_VIDEO, false, "waiting for USB UVC device %04x:%04x",
+                   UVC_CARD_VID, UVC_CARD_PID);
+    kvm_cap_report(KVM_CAP_MJPEG, true, NULL);
+    kvm_cap_report(KVM_CAP_AUDIO, false, "USB UAC audio is not connected to the audio pipeline");
+    capture_status_set_signal(false, 0);
+    return kvm_uvc_init(&config, uvc_frame_received, uvc_state_changed, NULL);
+}
+#endif
 
 void capture_start(void)
 {
@@ -342,10 +470,19 @@ void capture_start(void)
      * gets there first. */
     screentext_store_init();
     capture_screentext_init();
+#if CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
+    const esp_err_t err = capture_uvc_start();
+    if (err != ESP_OK) {
+        kvm_cap_report(KVM_CAP_VIDEO, false, "USB UVC host failed to start (%s)",
+                       esp_err_to_name(err));
+        ESP_LOGE(CAPTURE_LOG_TAG, "USB UVC capture start: %s", esp_err_to_name(err));
+    }
+#else
     capture_mjpeg_bind_settings();
     /* Peak 1.4 KB measured; the rest was internal RAM for nothing. */
     const uint32_t cam_stack = 6144;
     xTaskCreatePinnedToCore(camera_task, "cam", cam_stack, NULL, 5, NULL, 0);
+#endif
 }
 
 /*

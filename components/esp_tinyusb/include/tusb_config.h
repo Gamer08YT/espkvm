@@ -87,7 +87,7 @@ extern "C" {
 
 #define CFG_TUD_ENABLED                 1       // TinyUSB Device enabled
 
-#if (CONFIG_IDF_TARGET_ESP32P4)
+#if CONFIG_IDF_TARGET_ESP32P4 && !CONFIG_KVM_CAPTURE_SOURCE_USB_UVC
 #define CFG_TUD_MAX_SPEED               OPT_MODE_HIGH_SPEED
 #else
 #define CFG_TUD_MAX_SPEED               OPT_MODE_FULL_SPEED

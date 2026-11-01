@@ -8,6 +8,7 @@ menu "ESP-KVM"
         config KVM_ENABLE_H264
             bool "H.264 video encoding (hardware)"
             default y
+            depends on !KVM_CAPTURE_SOURCE_USB_UVC
             help
                 Pull in the esp_h264 component and offer H.264 as a stream codec.
                 Availability is probed at boot (chip revision, encoder open) and
@@ -160,6 +161,17 @@ menu "ESP-KVM"
     endmenu
 
     menu "Video capture"
+        config KVM_CAPTURE_SOURCE_USB_UVC
+            bool "Use Ziyan 345f:2109 USB UVC capture card"
+            default n
+            help
+                Receive 1920x1080 at 30 fps MJPEG from the Ziyan 345f:2109
+                capture card on the ESP32-P4 High-Speed OTG port. The target-
+                facing keyboard, mouse, virtual media and serial device move to
+                the separate Full-Speed OTG port. This replaces CSI bridge
+                capture for this build. The board needs both ports wired, and
+                the High-Speed host needs a switched 5 V supply for the card.
+
         config KVM_TC358743_RST_GPIO
             int "TC358743 RESETN GPIO (active low; -1 if unused)"
             range -1 ENV_GPIO_RANGE_MAX
