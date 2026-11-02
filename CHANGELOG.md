@@ -10,6 +10,8 @@ bumps the patch).
 ### Added
 - Optional VNC server with VNC password authentication, Tight/JPEG screen
   updates, and keyboard and pointer input. It is off by default.
+- VeNCrypt 0.2 with X509Vnc and TLSVnc for VNC viewers that require an encrypted
+  connection; the legacy VNC authentication type remains available for compatibility.
 - `POST /api/v1/vnc/session` issues a one-use, 60-second ticket that a standard
   VNC viewer can enter as its password.
 
