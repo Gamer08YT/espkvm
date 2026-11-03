@@ -16,6 +16,8 @@ bumps the patch).
   VNC viewer can enter as its password.
 
 ### Fixed
+- VeNCrypt now handles retryable TLS socket I/O and fragmented subtype negotiation
+  without consuming the TLS ClientHello before the TLS layer starts.
 - VNC reuses its H.264 JPEG encoder and output buffer for a connected viewer,
   waits for new frames on incremental requests, times out stalled handshakes,
   shares the web login throttle, and keeps VNC input independent from console
